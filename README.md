@@ -24,16 +24,16 @@ mkdir data_dir
 python prepare_openwebtext_data.py
 ```
 
-train a MD4-S model using openwebtext.
+train a MD4-S model over text data (using openwebtext).
 
 ```
-python md4/main.py --config=md4/configs/masked/openwebtext.py --sharded=false --workdir=./expt
+python md4/main.py --config=md4/configs/md4/openwebtext.py --sharded=false --workdir=./expt
 ```
 
-alternatively, you can train a MD4-S model using fineweb-edu.
+alternatively, you can train a MD4-S model over image data (using cifar10).
 
 ```
-python md4/main.py --config=md4/configs/masked/fineweb_edu.py --sharded=false --workdir=./expt
+python md4/main.py --config=md4/configs/md4/cifar10.py --sharded=false --workdir=./expt
 ```
 
 ### choose batch size
