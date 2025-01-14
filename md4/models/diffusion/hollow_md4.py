@@ -225,10 +225,11 @@ class HollowMD4(nn.Module):
       nonmask_coeff = self.noise_schedule.dalpha(t) / self.noise_schedule.alpha(t)
 
       # cont-time loss
+      # Average over the two losses
       loss_diff = (
           self.noise_schedule.dgamma_times_alpha(t) * masked_neg_cross_ent
         + nonmask_coeff * nonmask_neg_cross_ent
-      )
+      ) * 0.5
 
     # loss_diff: [bs]
     return loss_diff
