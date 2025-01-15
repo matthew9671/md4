@@ -11,7 +11,8 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 
-from md4.networks.transformer import RMSNorm, FeedForward
+from md4.networks.transformer import RMSNorm, FeedForward, precompute_freqs_cis, reshape_for_broadcast, \
+  repeat_kv, Dropout1d, activation_map, jax_unstack
 
 @dataclasses.dataclass(unsafe_hash=True)
 class ModelArgs:
@@ -36,6 +37,27 @@ class ModelArgs:
   causal: bool = False
   # ----------------------------
   n_layers_per_mixed: int = 2
+
+def apply_rotary_emb(x, freqs_cos, freqs_sin):
+  # reshape x to match the complex representation
+  # [bs, seq_len, n_head, head_dim // 2]
+  x_r, x_i = jax_unstack(x.reshape(x.shape[:-1] + (-1, 2)), -1)
+
+  # reshape freqs_cos and freqs_sin for broadcasting
+  # [1, seq_len, 1, head_dim // 2]
+  freqs_cos = reshape_for_broadcast(freqs_cos, x_r)
+  freqs_sin = reshape_for_broadcast(freqs_sin, x_r)
+
+  # apply rotation using real numbers
+  x_out_r = x_r * freqs_cos - x_i * freqs_sin
+  x_out_i = x_r * freqs_sin + x_i * freqs_cos
+
+  # flatten last two dimensions
+  # [bs, seq_len, n_head, head_dim // 2, 2] -> [bs, seq_len, n_head, head_dim]
+  x_out = jnp.stack([x_out_r, x_out_i], axis=-1).reshape(
+      x_out_r.shape[:3] + (-1,)
+  )
+  return x_out
 
 class MaskedAttention(nn.Module):
   """
@@ -65,42 +87,48 @@ class MaskedAttention(nn.Module):
       self.attn_dropout = nn.Dropout(self.dropout_rate)
       self.resid_dropout = Dropout1d(self.dropout_rate)
 
-  def __call__(self, x, freqs_cos, freqs_sin, attn_mask, train=False):
-    bsz, seqlen, _ = x.shape
+  def __call__(self, x_q, x_kv, freqs_cos_q, freqs_sin_q, attn_mask, 
+    freqs_cos_kv=None, freqs_sin_kv=None, train=False):
+    bsz, seqlen_q, _ = x_q.shape
+    _, seqlen_kv, _ = x_kv.shape
 
     # QKV
-    xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-    xq = xq.reshape(bsz, seqlen, self.n_heads, self.head_dim)
-    xk = xk.reshape(bsz, seqlen, self._n_kv_heads, self.head_dim)
-    xv = xv.reshape(bsz, seqlen, self._n_kv_heads, self.head_dim)
+    xq, xk, xv = self.wq(x_q), self.wk(x_kv), self.wv(x_kv)
+    xq = xq.reshape(bsz, seqlen_q, self.n_heads, self.head_dim)
+    xk = xk.reshape(bsz, seqlen_kv, self._n_kv_heads, self.head_dim)
+    xv = xv.reshape(bsz, seqlen_kv, self._n_kv_heads, self.head_dim)
 
     # RoPE relative positional embeddings
-    xq, xk = apply_rotary_emb(xq, xk, freqs_cos, freqs_sin)
+    xq = apply_rotary_emb(xq, freqs_cos_q, freqs_sin_q)
+    
+    freqs_cos_kv = freqs_cos_q if freqs_cos_kv is None else freqs_cos_kv
+    freqs_sin_kv = freqs_sin_q if freqs_sin_kv is None else freqs_cos_kv
+    xk = apply_rotary_emb(xk, freqs_cos_kv, freqs_sin_kv)
 
     # grouped multiquery attention: expand out keys and values
     xk = repeat_kv(xk, self.n_rep)
     xv = repeat_kv(xv, self.n_rep)
 
     # make heads into a batch dimension
-    xq = xq.swapaxes(1, 2)  # (bs, n_heads, seqlen, head_dim)
+    xq = xq.swapaxes(1, 2)  # (bs, n_heads, seqlen_q, head_dim)
     xk = xk.swapaxes(1, 2)
     xv = xv.swapaxes(1, 2)
 
     scores = jnp.matmul(xq, xk.swapaxes(2, 3)) / math.sqrt(self.head_dim)
 
-    # Assuming attn_mask has shape (seqlen, seqlen)
+    # Assuming attn_mask has shape (seqlen_q, seqlen_kv)
     attn_mask = attn_mask[None, None]
     scores = (
-          scores + mask[:, :, :seqlen, :seqlen]
-      )  # (bs, n_heads, seqlen, seqlen)
+          scores + attn_mask
+      )  # (bs, n_heads, seqlen_q, seqlen_kv)
 
     scores = nn.softmax(scores, axis=-1)
     if self.dropout_rate > 0.0:
       scores = self.attn_dropout(scores, deterministic=not train)
-    output = jnp.matmul(scores, xv)  # (bs, n_heads, seqlen, head_dim)
+    output = jnp.matmul(scores, xv)  # (bs, n_heads, seqlen_q, head_dim)
 
     # restore time as batch dimension and concat heads
-    output = output.swapaxes(1, 2).reshape(bsz, seqlen, -1)
+    output = output.swapaxes(1, 2).reshape(bsz, seqlen_q, -1)
 
     # final projection into the residual stream
     output = self.wo(output)
@@ -142,7 +170,8 @@ class MaskedTransformerBlock(nn.Module):
     )
 
   @nn.compact
-  def __call__(self, x, freqs_cos, freqs_sin, attn_mask, cond=None, train=False):
+  def __call__(self, x_q, x_kv, freqs_cos, freqs_sin, attn_mask, 
+    freqs_cos_kv=None, freqs_sin_kv=None, cond=None, train=False):
     if cond is not None:
       activation = activation_map[self.args.mlp_type]
       if self.args.cond_type == 'adaln':
@@ -173,11 +202,14 @@ class MaskedTransformerBlock(nn.Module):
       ffn_norm = nn.LayerNorm(
           epsilon=self.args.norm_eps, use_bias=False, use_scale=False
       )
-      h = x + gate_att * self.attention(
-          attention_norm(x) * (scale_att + 1.0) + shift_att,
+      h = x_q + gate_att * self.attention(
+          attention_norm(x_q) * (scale_att + 1.0) + shift_att,
+          attention_norm(x_kv) * (scale_att + 1.0) + shift_att,
           freqs_cos,
           freqs_sin,
           attn_mask,
+          freqs_cos_kv=freqs_cos_kv, 
+          freqs_sin_kv=freqs_sin_kv,
           train=train,
       )
       out = h + gate_mlp * self.feed_forward(
@@ -186,8 +218,11 @@ class MaskedTransformerBlock(nn.Module):
     else:
       attention_norm = RMSNorm(self.args.dim, eps=self.args.norm_eps)
       ffn_norm = RMSNorm(self.args.dim, eps=self.args.norm_eps)
-      h = x + self.attention(
-          attention_norm(x), freqs_cos, freqs_sin, train=train
+      h = x_q + self.attention(
+          attention_norm(x_q), attention_norm(x_kv), freqs_cos, freqs_sin, attn_mask, 
+          freqs_cos_kv=freqs_cos_kv, 
+          freqs_sin_kv=freqs_sin_kv,
+          train=train
       )
       out = h + self.feed_forward(ffn_norm(h), train=train)
 
@@ -230,13 +265,16 @@ class HollowTransformer(nn.Module):
     freqs_sin_b = freqs_sin[2:]
     freqs_cos_m = freqs_cos[1:-1]
     freqs_sin_m = freqs_sin[1:-1]
+    freqs_cos_m_kv = jnp.concatenate([freqs_cos_f, freqs_cos_b], axis=0)
+    freqs_sin_m_kv = jnp.concatenate([freqs_sin_f, freqs_sin_b], axis=0)
     hf = h[:,:-2]
     hb = h[:,2:]
     # Use sum instead of concatenation so we can keep dimension constant
     hm = hf + hb #jnp.concatenate([hf, hb], axis=2)
-    mask = jnp.full((L, L), -jnp.inf)
-    forward_mask = jnp.tril(mask)
-    backward_mask = jnp.triu(mask)
+    mask = jnp.full((hm.shape[1], hm.shape[1]), -jnp.inf)
+    # Note that here the fill value is -inf so the values we take become the mask
+    forward_mask = jnp.triu(mask, k=1)
+    backward_mask = jnp.tril(mask, k=-1)
     mixing_mask = jnp.concatenate([forward_mask, backward_mask], axis=-1)   
 
     layer_id = 0
@@ -244,19 +282,21 @@ class HollowTransformer(nn.Module):
     for layer in range(args.n_layers):
       # Forward stream
       hf = MaskedTransformerBlock(layer_id, args)(
-          hf, freqs_cos_f, freqs_sin_f, forward_mask, cond=cond, train=train
+          hf, hf, freqs_cos_f, freqs_sin_f, forward_mask, cond=cond, train=train
       )
       layer_id += 1
       # Backward stream
       hb = MaskedTransformerBlock(layer_id, args)(
-          hb, freqs_cos_b, freqs_sin_b, backward_mask, cond=cond, train=train
+          hb, hb, freqs_cos_b, freqs_sin_b, backward_mask, cond=cond, train=train
       )
       layer_id += 1
       # Mixing stream
       if (layer + 1) % args.n_layers_per_mixed == 0:
         hfb = jnp.concatenate([hf, hb], axis=1)
         hm = MaskedTransformerBlock(layer_id, args)(
-          hm, freqs_cos_m, freqs_sin_m, mixing_mask, cond=cond, train=train
+          hm, hfb, freqs_cos_m, freqs_sin_m, mixing_mask, 
+          freqs_cos_kv=freqs_cos_m_kv, freqs_sin_kv=freqs_sin_m_kv,
+          cond=cond, train=train
         )
         layer_id += 1
 
