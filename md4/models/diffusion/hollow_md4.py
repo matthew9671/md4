@@ -72,6 +72,7 @@ class HollowMD4(nn.Module):
   num_heads: int = 12
   antithetic_time_sampling: bool = True
   n_layers: int = 32
+  n_layers_per_mixed: int = 8
   n_dit_layers: int = 0
   dit_num_heads: int = 12
   dit_hidden_size: int = 768
@@ -116,6 +117,7 @@ class HollowMD4(nn.Module):
         cond_type=self.cond_type,
         outside_embed=self.outside_embed,
         model_sharding=self.model_sharding,
+        n_layers_per_mixed=self.n_layers_per_mixed
     )
 
   def forward_sample(self, x, t):

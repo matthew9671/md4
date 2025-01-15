@@ -35,7 +35,7 @@ class ModelArgs:
   n_embed_classes: int = 1024
   causal: bool = False
   # ----------------------------
-  num_layers_per_mixed: int = 2
+  n_layers_per_mixed: int = 2
 
 class MaskedAttention(nn.Module):
   """
@@ -253,7 +253,7 @@ class HollowTransformer(nn.Module):
       )
       layer_id += 1
       # Mixing stream
-      if (layer + 1) % args.num_layers_per_mixed == 0:
+      if (layer + 1) % args.n_layers_per_mixed == 0:
         hfb = jnp.concatenate([hf, hb], axis=1)
         hm = MaskedTransformerBlock(layer_id, args)(
           hm, freqs_cos_m, freqs_sin_m, mixing_mask, cond=cond, train=train

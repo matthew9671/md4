@@ -82,6 +82,7 @@ def get_model(config: ml_collections.ConfigDict):
         feature_dim=config.feature_dim,
         num_heads=config.num_heads,
         n_layers=config.n_layers,
+        n_layers_per_mixed=config.n_layers_per_mixed,
         n_dit_layers=config.n_dit_layers,
         dit_num_heads=config.dit_num_heads,
         dit_hidden_size=config.dit_hidden_size,

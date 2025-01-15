@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-r"""A config for training MD4 on CIFAR10."""
+r"""A config for training MD4 on text8."""
 
 from collections import abc
 
@@ -26,51 +26,52 @@ def get_config() -> config_dict.ConfigDict:
   config = config_dict.ConfigDict()
 
   # dataset configs
-  config.vocab_size = 256
-  config.dataset = "cifar10"
+  config.vocab_size = 27
+  config.dataset = "text8"
   config.classes = -1
 
-  config.task_type = "image"  # text or image
+  config.task_type = "text"  # text or image
   config.model_type = "hollow_md4"
-  config.data_shape = (32, 32, 3)
+  config.data_shape = (256,)
 
   # timesteps: int or None
-  config.timesteps = 256
+  config.timesteps = 1000
   # linear, cosine, poly[exponent], e.g., poly3
   config.noise_schedule = "linear"
-  config.outside_embed = True  # not used
+  config.outside_embed = True
   # t or none (removes time dependence)
   config.time_features = "t"
   config.cont_time = True
 
-  config.feature_dim = 128
-  config.n_layers = 32
-  config.n_layers_per_mixed = 8
+  config.feature_dim = 64
+  config.n_layers = 12
+  config.n_layers_per_mixed = 4
   config.ch_mult = (1,)  # not used
   config.n_dit_layers = 0  # not used
   config.dit_num_heads = 12  # not used
   config.dit_hidden_size = 768  # not used
-  config.dropout_rate = 0.1
+  config.dropout_rate = 0.0
 
-  config.num_heads = 12  # not used
-  config.mlp_type = "glu"  # not used
-  config.depth_scaled_init = True  # not used
-  config.cond_type = "adaln_zero"  # not used
+  config.num_heads = 12
+  config.mlp_type = "glu"
+  config.depth_scaled_init = True
+  config.cond_type = "adaln_zero"
 
-  config.learning_rate = 2e-4
+  config.learning_rate = 3e-4
   config.learning_rate_schedule = "cosine"
-  config.warmup_steps = 100
-  config.weight_decay = 0.01
+  config.warmup_steps = 2000
+  config.weight_decay = 0.0
   config.clip = 0.0
-  config.b2 = 0.99
+  config.b2 = 0.999
   config.num_epochs = -1
   config.ema_rate = 0.9999
   # If num_train_steps==-1 then the number of training steps is calculated from
   # num_epochs.
-  config.num_train_steps = 2_000_000
-  # Evaluates for a full epoch if num_eval_steps==-1
+  config.num_train_steps = 1_000_000
+  # Evaluates for a full epoch if num_eval_steps==-1.
   config.num_eval_steps = -1
-  config.batch_size = 256
+  config.batch_size = 512
+  config.num_microbatches = 1
   config.per_device_batch_size = -1
   # If batches should be added to evaluate the entire dataset.
   config.eval_pad_last_batch = False
@@ -85,12 +86,12 @@ def get_config() -> config_dict.ConfigDict:
   config.topp = 0.98
 
   config.log_loss_every_steps = 500
-  config.eval_every_steps = 10000
+  config.eval_every_steps = 5000
   config.checkpoint_every_steps = 5000
   config.checkpoint_keep_period = 10000
 
   # Single integer or tuple. If None will use (XManager ID, work unit).
-  config.seed = 0
+  config.seed = 42
 
   # Number of workers for Grain loaders.
   config.grain_num_workers = 15
@@ -105,13 +106,8 @@ def get_config() -> config_dict.ConfigDict:
 # or the flag `--nosweep` can be specified to the launcher.
 def sweep(add: abc.Callable[..., None]):
   """Starts multiple work units with varying config args."""
-  # For best likelihood results
   add(
-      noise_schedule="linear",
-      sampling_grid="cosine",
+      learning_rate=5e-4,
+      dropout_rate=0.05,
+      weight_decay=0.03,
   )
-  # For best sample quality
-  # add(
-  #     noise_schedule="cosine",
-  #     sampling_grid="uniform",
-  # )

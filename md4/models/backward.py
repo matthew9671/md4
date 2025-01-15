@@ -22,6 +22,7 @@ import jax
 import jax.numpy as jnp
 
 from md4.networks import sharded_transformer
+from md4.networks import hollow_transformer
 from md4.networks import transformer
 from md4.networks import unet
 from md4.networks import uvit
@@ -107,6 +108,7 @@ class DiscreteClassifier(nn.Module):
   """Discrete input classifier implementation."""
 
   n_layers: int = 12
+  n_layers_per_mixed: int = 3
   n_dit_layers: int = 0
   dit_num_heads: int = 12
   dit_hidden_size: int = 768
@@ -121,6 +123,7 @@ class DiscreteClassifier(nn.Module):
   cond_type: str = 'adaln'
   outside_embed: bool = False
   model_sharding: bool = False
+  use_hollow_transformer: bool = False
 
   @nn.compact
   def __call__(self, z, t=None, cond=None, train=False):
@@ -151,6 +154,24 @@ class DiscreteClassifier(nn.Module):
         )
         # [bs, seq_len] -> [bs, seq_len, |V|]
         net = sharded_transformer.Transformer(args)
+      elif self.use_hollow_transformer:
+        args = hollow_transformer.ModelArgs(
+            dim=self.feature_dim * self.num_heads,
+            n_layers=self.n_layers,
+            n_heads=self.num_heads,
+            n_kv_heads=self.num_heads,
+            output_channels=self.vocab_size,
+            multiple_of=32,
+            dropout_rate=self.dropout_rate,
+            depth_scaled_init=self.depth_scaled_init,
+            mlp_type=self.mlp_type,
+            cond_type=self.cond_type,
+            embed_input=not self.outside_embed,
+            n_embed_classes=self.vocab_size + 1,
+            n_layers_per_mixed=self.n_layers_per_mixed
+        )
+        # [bs, seq_len] -> [bs, seq_len, |V|]
+        net = transformer.Transformer(args)
       else:
         args = transformer.ModelArgs(
             dim=self.feature_dim * self.num_heads,
