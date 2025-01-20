@@ -19,8 +19,8 @@ export PYTHONPATH="$PYTHONPATH:~/md4"
 cd md4
 mkdir data_dir
 cd data_dir
-gsutil cp  gs://maskdiff/openwebtext/openwebtext_np_train.np .
-gsutil cp  gs://maskdiff/openwebtext/openwebtext_np_eval.np .
+gsutil cp  gs://maskdiff/openwebtext/openwebtext_np_train.npy .
+gsutil cp  gs://maskdiff/openwebtext/openwebtext_np_eval.npy .
 ```
 
 ## Usage
