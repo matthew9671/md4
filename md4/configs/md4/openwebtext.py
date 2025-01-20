@@ -99,6 +99,10 @@ def get_config() -> config_dict.ConfigDict:
 
     config.trial = 0  # Dummy for repeated runs.
     config.test_in_colab = False
+
+    config.wandbentity = "fengc"
+    config.wandbname = "md4-base"
+
     return config
 
 

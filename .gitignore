@@ -26,3 +26,4 @@ MANIFEST
 expt*/
 data_dir/
 *.pkl
+wandb/
