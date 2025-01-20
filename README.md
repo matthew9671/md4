@@ -9,10 +9,18 @@ please use `requirements_gpu.txt` if your accelerator is GPUs, use
 `requirements_tpu`.txt when using Google Cloud TPUs.
 
 ```
-python -m venv md4_venv
-source md4_venv/bin/activate
-pip install -r requirements_[gpu/tpu].txt
-export PYTHONPATH="$PYTHONPATH:~/path/to/md4"
+conda create -y --name md4_venv python=3.10
+conda activate md4_venv
+pip install -r requirements_gpu.txt
+export PYTHONPATH="$PYTHONPATH:~/md4"
+```
+
+```
+cd md4
+mkdir data_dir
+cd data_dir
+gsutil cp  gs://maskdiff/openwebtext/openwebtext_np_train.np .
+gsutil cp  gs://maskdiff/openwebtext/openwebtext_np_eval.np .
 ```
 
 ## Usage
