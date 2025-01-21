@@ -104,6 +104,7 @@ class MD4(nn.Module):
   sampling_grid: str = 'cosine'
   topp: float = 0.98
   model_sharding: bool = False
+  mixed_precision_training: bool = True
 
   def setup(self):
     self.noise_schedule = MaskingSchedule(
@@ -128,6 +129,7 @@ class MD4(nn.Module):
         cond_type=self.cond_type,
         outside_embed=self.outside_embed,
         model_sharding=self.model_sharding,
+        dtype_compute=jnp.bfloat16 if self.mixed_precision_training else jnp.float32,
     )
 
   def forward_sample(self, x, t):
@@ -208,6 +210,10 @@ class MD4(nn.Module):
     # sample z_t
     zt = self.forward_sample(x, t)
     logits, _ = self.predict_x(zt, t, cond=cond, train=train)
+
+    # # Safe casting to float32
+    # logits = logits.astype('float32')
+
     log_p = jax.nn.log_softmax(logits, axis=-1)
     one_hot_x = jax.nn.one_hot(x, self.vocab_size)
     neg_cross_ent = one_hot_x * log_p
@@ -264,7 +270,8 @@ class MD4(nn.Module):
     loss = loss_diff + loss_prior + loss_recon
 
     model_stats = {
-        'loss': loss,
+      # TODO: turn this back into float32
+        'loss': loss.astype(jnp.bfloat16),
         'loss_diff': loss_diff,
         'loss_prior': loss_prior,
         'loss_recon': loss_recon,

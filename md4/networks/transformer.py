@@ -58,6 +58,7 @@ class ModelArgs:
   embed_input: bool = False
   n_embed_classes: int = 1024
   causal: bool = False
+  dtype_compute: jnp.dtype = jnp.bfloat16
 
 
 class RMSNorm(nn.Module):
@@ -163,6 +164,7 @@ class Attention(nn.Module):
   dropout_rate: float = 0.0
   causal: bool = False
   qkv_bias: bool = False
+  dtype_compute: jnp.dtype = jnp.bfloat16
 
   def setup(self):
     self._n_kv_heads = (
@@ -207,6 +209,10 @@ class Attention(nn.Module):
       scores = (
           scores + mask[:, :, :seqlen, :seqlen]
       )  # (bs, n_heads, seqlen, seqlen)
+
+    # # Safe casting
+    # scores = scores.astype(jnp.float32)
+
     scores = nn.softmax(scores, axis=-1)
     if self.dropout_rate > 0.0:
       scores = self.attn_dropout(scores, deterministic=not train)
@@ -219,7 +225,7 @@ class Attention(nn.Module):
     output = self.wo(output)
     if self.dropout_rate > 0.0:
       output = self.resid_dropout(output, deterministic=not train)
-    return output
+    return output.astype(self.dtype_compute)
 
 
 class FeedForward(nn.Module):
@@ -270,6 +276,7 @@ class TransformerBlock(nn.Module):
         n_kv_heads=args.n_kv_heads,
         dropout_rate=args.dropout_rate,
         causal=args.causal,
+        dtype_compute=args.dtype_compute,
     )
 
     if args.depth_scaled_init:
@@ -350,6 +357,10 @@ class Transformer(nn.Module):
 
     if args.embed_input:
       h = nn.Embed(args.n_embed_classes, args.dim)(x)
+
+      # Mixed precision training
+      h = h.astype(args.dtype_compute)
+
       if args.dropout_rate > 0.0:
         h = nn.Dropout(args.dropout_rate, deterministic=not train)(h)
     else:
@@ -360,8 +371,8 @@ class Transformer(nn.Module):
         args.dim // args.n_heads, seqlen
     )
 
-    freqs_cos = freqs_cos[:seqlen]
-    freqs_sin = freqs_sin[:seqlen]
+    freqs_cos = freqs_cos[:seqlen].astype(args.dtype_compute)
+    freqs_sin = freqs_sin[:seqlen].astype(args.dtype_compute)
 
     for layer_id in range(args.n_layers):
       h = TransformerBlock(layer_id, args)(
@@ -369,6 +380,10 @@ class Transformer(nn.Module):
       )
 
     if cond is not None:
+
+      # Cast input for mixed precision training
+      cond = cond.astype(args.dtype_compute)
+
       output_norm = nn.LayerNorm(
           epsilon=args.norm_eps, use_bias=False, use_scale=False
       )

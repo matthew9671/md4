@@ -21,6 +21,8 @@ from md4.models.diffusion import genmd4
 from md4.models.diffusion import md4
 from md4.models.diffusion import hollow_md4
 
+from jax import numpy as jnp
+
 
 def get_model(config: ml_collections.ConfigDict):
   """Get model instances."""
@@ -50,6 +52,7 @@ def get_model(config: ml_collections.ConfigDict):
         sampling_grid=config.sampling_grid,
         topp=config.topp,
         model_sharding=config.get("model_sharding", False),
+        mixed_precision_training=config.get("mixed_precision_training", False),
     )
   elif config.model_type == "genmd4":
     return genmd4.GenMD4(
@@ -73,6 +76,7 @@ def get_model(config: ml_collections.ConfigDict):
         cond_type=config.cond_type,
         outside_embed=config.outside_embed,
         time_features=config.time_features,
+        mixed_precision_training=config.get("mixed_precision_training", False),
     )
   elif config.model_type == "hollow_md4":
     return hollow_md4.HollowMD4(
@@ -101,6 +105,7 @@ def get_model(config: ml_collections.ConfigDict):
         sampling_grid=config.sampling_grid,
         topp=config.topp,
         model_sharding=config.get("model_sharding", False),
+        mixed_precision_training=config.get("mixed_precision_training", False),
     )
   else:
     raise NotImplementedError()

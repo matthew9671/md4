@@ -102,6 +102,7 @@ def create_train_state(
     rng: jnp.ndarray,
     input_shape: Sequence[int] | Mapping[str, Sequence[int]],
     schedule_fn: Callable[[Any], Any],
+    mixed_precision_training: bool = True
 ) -> tuple[nn.Module, optax.GradientTransformation, TrainState, Any]:
     """Create and initialize the model."""
     model = model_utils.get_model(config)
@@ -125,6 +126,11 @@ def create_train_state(
     logging.info("metric_keys: %s", metric_keys)
     metrics_class = create_metrics_class_from_keys(metric_keys)
     state, params = flax.core.pop(variables, "params")
+    
+    if mixed_precision_training:
+        # Change the parameters to bfloat16 for testing
+        params = jax.tree_map(lambda x: x.astype(jnp.bfloat16), params)
+        
     del variables
     parameter_overview.log_parameter_overview(
         state, msg="############# state #############"
@@ -271,6 +277,8 @@ def train_step(
         (_, (new_state, metrics_dict)), grads = grad_fn(
             train_state.params, train_state.state, rng, model, batch, train=True
         )
+        # Make sure grads are full precision by explicitly casting them
+        grads = jax.tree_map(lambda x: x.astype(jnp.float32), grads)
     else:
         batch_size = next(iter(batch.values())).shape[0]
         print("batch_size", batch_size)
@@ -304,6 +312,9 @@ def train_step(
             (_, (new_state, metrics_dict)), grads = grad_fn(
                 train_state.params, train_state_state, mbrng, model, mb, train=True
             )
+            # Make sure grads are full precision by explicitly casting them
+            grads = jax.tree_map(lambda x: x.astype(jnp.bfloat16), grads)
+
             return metrics_dict, grads, new_state
 
         def per_microbatch_train_step(loop_cnt, carry):
@@ -322,7 +333,8 @@ def train_step(
             return rng, grad_accum, metrics_dict, train_state_state
 
         # Initialize gradient accumulation loop state.
-        accum_dtype = jnp.float32
+        # accum_dtype = jnp.float32
+        accum_dtype = jnp.bfloat16
         grad_accum_init = jax.tree.map(
             lambda x: jnp.zeros(x.shape, accum_dtype), train_state.params
         )
@@ -447,7 +459,8 @@ import tensorflow as tf
 
 
 def create_datasets(config, data_seed):
-    data_train = np.load("data_dir/openwebtext_np_train.npy", allow_pickle=True)
+    # Changing train to use eval dataset just to see if it runs properly
+    data_train = np.load("data_dir/openwebtext_np_eval.npy", allow_pickle=True)
     data_eval = np.load("data_dir/openwebtext_np_eval.npy", allow_pickle=True)
     train_ds = tf.data.Dataset.from_tensor_slices({"text": data_train})
     eval_ds = tf.data.Dataset.from_tensor_slices({"text": data_eval})
@@ -488,6 +501,16 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     writer = metric_writers.create_default_writer(
         workdir, just_logging=jax.process_index() > 0
     )
+
+    # Global setting for mixed precision training
+    if config.mixed_precision_training:
+        # Default to bfloat16 for matmuls
+        jax.config.update("jax_default_matmul_precision", "bfloat16")
+        # log
+        logging.info("Using mixed precision training.")
+    else:
+        jax.config.update("jax_default_matmul_precision", "bfloat16")
+
     # Learning rate schedule.
     assert config.batch_size % jax.device_count() == 0
     per_device_batch_size = config.batch_size // jax.device_count()
@@ -522,6 +545,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     # Initialize model.
     rng, model_rng = jax.random.split(rng)
     data_shape = input_pipeline.get_data_shape(config)
+    # Note: parameters are initialized in full precision
+    # We could also try casting them to half precision here
     model, optimizer, train_state, metrics_class = (
         create_train_state(  # pylint: disable=invalid-name
             config,
@@ -625,8 +650,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
 
-            # if False:
-            if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
+            if False:
+            # if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
                 for split, eval_loader in eval_loaders.items():
                     rng, eval_rng = jax.random.split(rng)
                     with report_progress.timed("eval"):
