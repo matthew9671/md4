@@ -453,7 +453,7 @@ def create_datasets(config, data_seed):
     eval_ds = tf.data.Dataset.from_tensor_slices({"text": data_eval})
     # per_device_batch_size = config.batch_size // jax.device_count()
     # batch_dims = [jax.local_device_count(), per_device_batch_size]
-    train_ds = train_ds.shuffle(buffer_size=len(data_train))
+    train_ds = train_ds.shuffle(buffer_size=len(data_train), seed=data_seed)
     train_ds = train_ds.repeat(None)  # Repeat infinitely
     train_ds = train_ds.batch(config.batch_size, drop_remainder=True)
     eval_ds = eval_ds.batch(config.batch_size, drop_remainder=True)
@@ -479,6 +479,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
         config=config,
         name=config.wandbname,
     )
+
+    jax.config.update("jax_default_matmul_precision", "bfloat16")
 
     workdir = epath.Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -536,13 +538,13 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     checkpoint_manager = _get_checkpoint_manager(config, workdir)
 
     # Retrieve data from previous checkpoints if possible.
-    checkpointed_state = dict(train_state=train_state, train_iter=train_iter)
+    checkpointed_state = dict(train_state=train_state)
     if checkpoint_manager.latest_step() is not None:
         checkpointed_state = checkpoint_manager.restore(
             checkpoint_manager.latest_step(), items=checkpointed_state
         )
     train_state = checkpointed_state["train_state"]
-    train_iter = checkpointed_state["train_iter"]
+    # train_iter = checkpointed_state["train_iter"]
 
     # Distribute training.
     train_state = flax_utils.replicate(train_state)
@@ -587,18 +589,25 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     ckpt_tf = tf.train.Checkpoint(iterator=train_iter)
     ckpt_manager = tf.train.CheckpointManager(ckpt_tf, workdir, max_to_keep=100)
 
+    if checkpoint_manager.latest_step() is not None:
+        print("Restoring data loader checkpoint...")
+        status = ckpt_tf.restore(ckpt_manager.latest_checkpoint)
+        status.assert_consumed()
+
     with metric_writers.ensure_flushes(writer):
         # Steps are in interval [1, num_train_steps], not [0, num_train_steps - 1].
         for step in range(initial_step + 1, num_train_steps + 1):
             is_last_step = step == num_train_steps
 
             if True:
+
                 # with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 batch = utils.reshape_batch(next(train_iter))
                 # batch = next(train_iter)
-                # import pdb
+                # if step >= 150:
+                #     import pdb
 
-                # pdb.set_trace()
+                #     pdb.set_trace()
 
                 if config.check_nans:
                     errs, (train_state, metrics_update) = p_train_step(
@@ -632,15 +641,15 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
                 for split, eval_loader in eval_loaders.items():
                     rng, eval_rng = jax.random.split(rng)
-                    with report_progress.timed("eval"):
-                        train_state = merge_batch_stats(train_state)
-                        eval_metrics = evaluate(
-                            p_eval_step,
-                            eval_rng,
-                            train_state,
-                            eval_loader,
-                            config.num_eval_steps,
-                        )
+                    # with report_progress.timed("eval"):
+                    train_state = merge_batch_stats(train_state)
+                    eval_metrics = evaluate(
+                        p_eval_step,
+                        eval_rng,
+                        train_state,
+                        eval_loader,
+                        config.num_eval_steps,
+                    )
                     eval_metrics_cpu = jax.tree_util.tree_map(
                         np.array, eval_metrics.compute()
                     )
@@ -650,7 +659,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                     writer.write_scalars(step, eval_metrics_cpu)
                     wandb.log(eval_metrics_cpu, step=step)
 
-                if hasattr(model, "sample_step"):
+                if False:
+                    # if hasattr(model, "sample_step"):
                     with report_progress.timed("sample"):
                         _, sample_rng = jax.random.split(rng)
                         dummy_loader = train_loader
@@ -685,17 +695,17 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                             # writer.write_texts(step, {"samples": texts})
 
             if step % config.checkpoint_every_steps == 0 or is_last_step:
-                with report_progress.timed("checkpoint"):
-                    train_state = merge_batch_stats(train_state)
-                    checkpoint_manager.save(
-                        step,
-                        items=dict(
-                            train_state=jax.tree_util.tree_map(
-                                np.array, flax_utils.unreplicate(train_state)
-                            ),
-                            # train_iter=train_iter,
+                # with report_progress.timed("checkpoint"):
+                train_state = merge_batch_stats(train_state)
+                checkpoint_manager.save(
+                    step,
+                    items=dict(
+                        train_state=jax.tree_util.tree_map(
+                            np.array, flax_utils.unreplicate(train_state)
                         ),
-                    )
-                    ckpt_manager.save()
+                        # train_iter=train_iter,
+                    ),
+                )
+                ckpt_manager.save()
 
     logging.info("Finishing training at step %d", num_train_steps)
