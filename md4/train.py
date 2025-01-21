@@ -584,6 +584,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     # Unreplicating from TPU is costly, so we only do it once at the start.
     initial_step = int(flax.jax_utils.unreplicate(train_state.step))
 
+    ckpt_tf = tf.train.Checkpoint(iterator=train_iter)
+    ckpt_manager = tf.train.CheckpointManager(ckpt_tf, workdir, max_to_keep=100)
+
     with metric_writers.ensure_flushes(writer):
         # Steps are in interval [1, num_train_steps], not [0, num_train_steps - 1].
         for step in range(initial_step + 1, num_train_steps + 1):
@@ -690,8 +693,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                             train_state=jax.tree_util.tree_map(
                                 np.array, flax_utils.unreplicate(train_state)
                             ),
-                            train_iter=train_iter,
+                            # train_iter=train_iter,
                         ),
                     )
+                    ckpt_manager.save()
 
     logging.info("Finishing training at step %d", num_train_steps)
