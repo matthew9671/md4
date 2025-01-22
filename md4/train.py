@@ -310,7 +310,7 @@ def train_step(
                 train_state.params, train_state_state, mbrng, model, mb, train=True
             )
             
-            # TODO: this is probably not necessary
+            # Cast to full precision for stability when accumulating gradients
             grads = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), grads)
 
             return metrics_dict, grads, new_state
@@ -331,9 +331,8 @@ def train_step(
             return rng, grad_accum, metrics_dict, train_state_state
 
         # Initialize gradient accumulation loop state.
-        # TODO: turn this back to full precision
-        # TODO: IMPORTANT: use full precision for stability
-        accum_dtype = utils.HALF_PRECISION
+        # IMPORTANT: use full precision for stability
+        accum_dtype = utils.FULL_PRECISION
         grad_accum_init = jax.tree.map(
             lambda x: jnp.zeros(x.shape, dtype=accum_dtype), train_state.params
         )
@@ -363,6 +362,10 @@ def train_step(
 
     # Compute average gradient across multiple workers.
     grads = jax.lax.pmean(grads, axis_name="batch")
+
+    # After accumulating gradients, cast back to half precision
+    grads = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), grads)
+
     updates, new_opt_state = optimizer.update(
         grads, train_state.opt_state, train_state.params
     )

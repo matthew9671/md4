@@ -215,19 +215,21 @@ class MD4(nn.Module):
     # # Safe casting to float32
     # logits = logits.astype('float32')
 
-    # TODO: IMPORTANT: thesse computations should be done in float32 for numerical stability!
-    # This function is probably automatically casted to float32
+    # IMPORTANT: cast to full precision because of softmax and sum
+    logit = logits.astype(utils.FULL_PRECISION)
     log_p = jax.nn.log_softmax(logits, axis=-1)
 
-    one_hot_x = jax.nn.one_hot(x, self.vocab_size, dtype=utils.HALF_PRECISION)
+    one_hot_x = jax.nn.one_hot(x, self.vocab_size)
     neg_cross_ent = one_hot_x * log_p
     neg_cross_ent = jnp.where(one_hot_x, neg_cross_ent, 0.0)
     neg_cross_ent = jnp.sum(neg_cross_ent, axis=-1)
-    mask = (zt == self.vocab_size).astype(utils.HALF_PRECISION)
+    mask = (zt == self.vocab_size)
 
     remaining_axis = list(range(x.ndim)[1:])
     # masked_neg_cross_ent: [bs]
     masked_neg_cross_ent = jnp.sum(mask * neg_cross_ent, remaining_axis)
+    # Cast back to half precision
+    masked_neg_cross_ent = masked_neg_cross_ent.astype(utils.HALF_PRECISION)
 
     if not self.cont_time:
       # loss for finite depth T, i.e. discrete time
@@ -247,7 +249,7 @@ class MD4(nn.Module):
       )
 
     # loss_diff: [bs]
-    return loss_diff.astype(utils.HALF_PRECISION)
+    return loss_diff
 
   @nn.compact
   def __call__(self, x, cond=None, train=False):

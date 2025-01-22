@@ -56,7 +56,7 @@ def get_config() -> config_dict.ConfigDict:
     config.depth_scaled_init = True
     config.cond_type = "adaln_zero"
 
-    config.learning_rate = 1e-6 #3e-4
+    config.learning_rate = 3e-4
     config.learning_rate_schedule = "cosine"
     config.warmup_steps = 2000
     config.weight_decay = 0.0
@@ -100,7 +100,7 @@ def get_config() -> config_dict.ConfigDict:
     config.trial = 0  # Dummy for repeated runs.
     config.test_in_colab = False
 
-    config.wandbentity = "yixiuz"
+    config.wandbentity = "fengc"
     config.wandbname = "md4-base"
 
     return config
