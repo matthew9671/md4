@@ -56,10 +56,7 @@ def get_config() -> config_dict.ConfigDict:
     config.depth_scaled_init = True
     config.cond_type = "adaln_zero"
 
-    # !!!
-    config.mixed_precision_training = True
-
-    config.learning_rate = 3e-4
+    config.learning_rate = 1e-6 #3e-4
     config.learning_rate_schedule = "cosine"
     config.warmup_steps = 2000
     config.weight_decay = 0.0
@@ -73,7 +70,7 @@ def get_config() -> config_dict.ConfigDict:
     # Evaluates for a full epoch if num_eval_steps==-1.
     config.num_eval_steps = -1
     config.batch_size = 512
-    config.num_microbatches = 16
+    config.num_microbatches = 4 # 8 if not using mixed precision
     config.per_device_batch_size = -1
     # If batches should be added to evaluate the entire dataset.
     config.eval_pad_last_batch = False
@@ -103,7 +100,7 @@ def get_config() -> config_dict.ConfigDict:
     config.trial = 0  # Dummy for repeated runs.
     config.test_in_colab = False
 
-    config.wandbentity = "fengc"
+    config.wandbentity = "yixiuz"
     config.wandbname = "md4-base"
 
     return config

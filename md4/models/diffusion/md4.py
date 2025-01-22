@@ -27,6 +27,7 @@ from md4 import binary_search
 from md4 import utils
 from md4.models import backward
 
+from jax.experimental import checkify
 
 tfd = tfp.distributions
 
@@ -129,7 +130,7 @@ class MD4(nn.Module):
         cond_type=self.cond_type,
         outside_embed=self.outside_embed,
         model_sharding=self.model_sharding,
-        dtype_compute=jnp.bfloat16 if self.mixed_precision_training else jnp.float32,
+        dtype_compute=utils.HALF_PRECISION,
     )
 
   def forward_sample(self, x, t):
@@ -214,12 +215,15 @@ class MD4(nn.Module):
     # # Safe casting to float32
     # logits = logits.astype('float32')
 
+    # TODO: IMPORTANT: thesse computations should be done in float32 for numerical stability!
+    # This function is probably automatically casted to float32
     log_p = jax.nn.log_softmax(logits, axis=-1)
-    one_hot_x = jax.nn.one_hot(x, self.vocab_size)
+
+    one_hot_x = jax.nn.one_hot(x, self.vocab_size, dtype=utils.HALF_PRECISION)
     neg_cross_ent = one_hot_x * log_p
     neg_cross_ent = jnp.where(one_hot_x, neg_cross_ent, 0.0)
     neg_cross_ent = jnp.sum(neg_cross_ent, axis=-1)
-    mask = (zt == self.vocab_size).astype('float32')
+    mask = (zt == self.vocab_size).astype(utils.HALF_PRECISION)
 
     remaining_axis = list(range(x.ndim)[1:])
     # masked_neg_cross_ent: [bs]
@@ -243,7 +247,7 @@ class MD4(nn.Module):
       )
 
     # loss_diff: [bs]
-    return loss_diff
+    return loss_diff.astype(utils.HALF_PRECISION)
 
   @nn.compact
   def __call__(self, x, cond=None, train=False):
@@ -266,12 +270,14 @@ class MD4(nn.Module):
     else:
       t = jax.random.uniform(rng1, shape=[bs])
 
-    loss_diff = self.diffusion_loss(t, x, cond=cond, train=train).mean()
+    t = t.astype(utils.HALF_PRECISION)
+
+    loss_diff = self.diffusion_loss(t, x, cond=cond, train=train)
+    loss_diff = loss_diff.mean()
     loss = loss_diff + loss_prior + loss_recon
 
     model_stats = {
-      # TODO: turn this back into float32
-        'loss': loss.astype(jnp.bfloat16),
+        'loss': loss,
         'loss_diff': loss_diff,
         'loss_prior': loss_prior,
         'loss_recon': loss_recon,

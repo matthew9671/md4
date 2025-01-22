@@ -27,6 +27,7 @@ from md4.networks import transformer
 from md4.networks import unet
 from md4.networks import uvit
 
+from md4 import utils
 
 def get_timestep_embedding(timesteps, embedding_dim, dtype='float'):
   """Build sinusoidal embeddings."""
@@ -35,8 +36,8 @@ def get_timestep_embedding(timesteps, embedding_dim, dtype='float'):
   # timesteps: [bs]
   half_dim = embedding_dim // 2
   emb = jnp.log(10_000) / (half_dim - 1)
-  emb = jnp.exp(jnp.arange(half_dim, dtype='float32') * -emb)
-  emb = timesteps.astype('float32')[:, None] * emb[None, :]
+  emb = jnp.exp(jnp.arange(half_dim, dtype=utils.HALF_PRECISION) * -emb)
+  emb = timesteps.astype(utils.HALF_PRECISION)[:, None] * emb[None, :]
   emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=1)
   if embedding_dim % 2 == 1:  # zero pad
     emb = jax.lax.pad(emb, jnp.array(0, dtype), ((0, 0, 0), (0, 1, 0)))
@@ -124,7 +125,7 @@ class DiscreteClassifier(nn.Module):
   outside_embed: bool = False
   model_sharding: bool = False
   use_hollow_transformer: bool = False
-  dtype_compute: jnp.dtype = jnp.float32
+  dtype_compute: str = utils.HALF_PRECISION
 
   @nn.compact
   def __call__(self, z, t=None, cond=None, train=False):

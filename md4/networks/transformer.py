@@ -29,6 +29,7 @@ import jax.numpy as jnp
 # pylint: disable=missing-class-docstring
 # pylint: disable=missing-function-docstring
 
+import md4.utils as utils
 
 activation_map = dict(
     swiglu=nn.swish,
@@ -58,7 +59,7 @@ class ModelArgs:
   embed_input: bool = False
   n_embed_classes: int = 1024
   causal: bool = False
-  dtype_compute: jnp.dtype = jnp.bfloat16
+  dtype_compute: str = utils.HALF_PRECISION
 
 
 class RMSNorm(nn.Module):
@@ -164,7 +165,6 @@ class Attention(nn.Module):
   dropout_rate: float = 0.0
   causal: bool = False
   qkv_bias: bool = False
-  dtype_compute: jnp.dtype = jnp.bfloat16
 
   def setup(self):
     self._n_kv_heads = (
@@ -225,7 +225,7 @@ class Attention(nn.Module):
     output = self.wo(output)
     if self.dropout_rate > 0.0:
       output = self.resid_dropout(output, deterministic=not train)
-    return output.astype(self.dtype_compute)
+    return output
 
 
 class FeedForward(nn.Module):
@@ -276,7 +276,6 @@ class TransformerBlock(nn.Module):
         n_kv_heads=args.n_kv_heads,
         dropout_rate=args.dropout_rate,
         causal=args.causal,
-        dtype_compute=args.dtype_compute,
     )
 
     if args.depth_scaled_init:
@@ -358,9 +357,6 @@ class Transformer(nn.Module):
     if args.embed_input:
       h = nn.Embed(args.n_embed_classes, args.dim)(x)
 
-      # Mixed precision training
-      h = h.astype(args.dtype_compute)
-
       if args.dropout_rate > 0.0:
         h = nn.Dropout(args.dropout_rate, deterministic=not train)(h)
     else:
@@ -371,18 +367,21 @@ class Transformer(nn.Module):
         args.dim // args.n_heads, seqlen
     )
 
-    freqs_cos = freqs_cos[:seqlen].astype(args.dtype_compute)
-    freqs_sin = freqs_sin[:seqlen].astype(args.dtype_compute)
+    freqs_cos = freqs_cos[:seqlen].astype(utils.HALF_PRECISION)
+    freqs_sin = freqs_sin[:seqlen].astype(utils.HALF_PRECISION)
 
     for layer_id in range(args.n_layers):
       h = TransformerBlock(layer_id, args)(
           h, freqs_cos, freqs_sin, cond=cond, train=train
       )
 
+    if utils.USE_PDB:
+      import pdb; pdb.set_trace()
+
     if cond is not None:
 
       # Cast input for mixed precision training
-      cond = cond.astype(args.dtype_compute)
+      cond = cond.astype(utils.HALF_PRECISION)
 
       output_norm = nn.LayerNorm(
           epsilon=args.norm_eps, use_bias=False, use_scale=False
@@ -407,7 +406,9 @@ class Transformer(nn.Module):
         ])
       else:
         raise NotImplementedError()
+
       shift_out, scale_out = jnp.split(ln(cond)[:, None, :], 2, axis=-1)
+
       logits = nn.Dense(
           output_channels, use_bias=False, kernel_init=nn.initializers.zeros
       )(output_norm(h) * (scale_out + 1) + shift_out)

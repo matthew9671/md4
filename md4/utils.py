@@ -30,6 +30,9 @@ import numpy as np
 from orbax import checkpoint as orbax_checkpoint
 import seaborn as sns
 
+USE_PDB = False # To turn debugging on/off
+FULL_PRECISION = "float32"
+HALF_PRECISION = "bfloat16"
 
 def loss2bpt(loss_dict, data_shape):
   """Normalize loss to bits per token."""

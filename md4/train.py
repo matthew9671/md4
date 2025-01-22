@@ -46,7 +46,6 @@ from md4.models import utils as model_utils
 
 import wandb
 
-
 @flax.struct.dataclass
 class TrainState:
     """State of the model and the training.
@@ -127,9 +126,8 @@ def create_train_state(
     metrics_class = create_metrics_class_from_keys(metric_keys)
     state, params = flax.core.pop(variables, "params")
     
-    if mixed_precision_training:
-        # Change the parameters to bfloat16 for testing
-        params = jax.tree_map(lambda x: x.astype(jnp.bfloat16), params)
+    # We're using half precision by default
+    params = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), params)
         
     del variables
     parameter_overview.log_parameter_overview(
@@ -256,7 +254,7 @@ def loss_fn(params, state, rng, model, batch, train=False):
 def merge_metrics(a_tree, b_tree):
     return jax.tree.map(lambda a, b: a + b, a_tree, b_tree)
 
-
+import time
 def train_step(
     model: nn.Module,
     optimizer: optax.GradientTransformation,
@@ -273,12 +271,11 @@ def train_step(
     rng = jax.random.fold_in(rng, jax.lax.axis_index("batch"))
 
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+
     if num_microbatches is None or num_microbatches <= 1:
         (_, (new_state, metrics_dict)), grads = grad_fn(
             train_state.params, train_state.state, rng, model, batch, train=True
         )
-        # Make sure grads are full precision by explicitly casting them
-        grads = jax.tree_map(lambda x: x.astype(jnp.float32), grads)
     else:
         batch_size = next(iter(batch.values())).shape[0]
         print("batch_size", batch_size)
@@ -312,8 +309,9 @@ def train_step(
             (_, (new_state, metrics_dict)), grads = grad_fn(
                 train_state.params, train_state_state, mbrng, model, mb, train=True
             )
-            # Make sure grads are full precision by explicitly casting them
-            grads = jax.tree_map(lambda x: x.astype(jnp.bfloat16), grads)
+            
+            # TODO: this is probably not necessary
+            grads = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), grads)
 
             return metrics_dict, grads, new_state
 
@@ -333,10 +331,11 @@ def train_step(
             return rng, grad_accum, metrics_dict, train_state_state
 
         # Initialize gradient accumulation loop state.
-        # accum_dtype = jnp.float32
-        accum_dtype = jnp.bfloat16
+        # TODO: turn this back to full precision
+        # TODO: IMPORTANT: use full precision for stability
+        accum_dtype = utils.HALF_PRECISION
         grad_accum_init = jax.tree.map(
-            lambda x: jnp.zeros(x.shape, accum_dtype), train_state.params
+            lambda x: jnp.zeros(x.shape, dtype=accum_dtype), train_state.params
         )
         initial_metrics_shape, _, _ = jax.eval_shape(
             metrics_and_grad,
@@ -368,6 +367,7 @@ def train_step(
         grads, train_state.opt_state, train_state.params
     )
     new_params = optax.apply_updates(train_state.params, updates)
+
     if ema_rate > 0.0:
         new_ema_params = jax.tree_util.tree_map(
             lambda x, y: x + (1.0 - ema_rate) * (y - x),
@@ -376,6 +376,7 @@ def train_step(
         )
     else:
         new_ema_params = None
+
     new_train_state = train_state.replace(
         step=train_state.step + 1,
         rng=new_rng,
@@ -459,8 +460,7 @@ import tensorflow as tf
 
 
 def create_datasets(config, data_seed):
-    # Changing train to use eval dataset just to see if it runs properly
-    data_train = np.load("data_dir/openwebtext_np_eval.npy", allow_pickle=True)
+    data_train = np.load("data_dir/openwebtext_np_train.npy", allow_pickle=True)
     data_eval = np.load("data_dir/openwebtext_np_eval.npy", allow_pickle=True)
     train_ds = tf.data.Dataset.from_tensor_slices({"text": data_train})
     eval_ds = tf.data.Dataset.from_tensor_slices({"text": data_eval})
@@ -502,14 +502,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
         workdir, just_logging=jax.process_index() > 0
     )
 
-    # Global setting for mixed precision training
-    if config.mixed_precision_training:
-        # Default to bfloat16 for matmuls
-        jax.config.update("jax_default_matmul_precision", "bfloat16")
-        # log
-        logging.info("Using mixed precision training.")
-    else:
-        jax.config.update("jax_default_matmul_precision", "bfloat16")
+    # This is not really useful if we're already storing the parameters in half precision
+    # jax.config.update("jax_default_matmul_precision", utils.HALF_PRECISION)
+    logging.info("Using mixed precision training. Half precision: " + utils.HALF_PRECISION)
+
 
     # Learning rate schedule.
     assert config.batch_size % jax.device_count() == 0
@@ -545,7 +541,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     # Initialize model.
     rng, model_rng = jax.random.split(rng)
     data_shape = input_pipeline.get_data_shape(config)
-    # Note: parameters are initialized in full precision
+    # Note: parameters are initialized in half precision if mixed_precision_training=True
     # We could also try casting them to half precision here
     model, optimizer, train_state, metrics_class = (
         create_train_state(  # pylint: disable=invalid-name
@@ -614,13 +610,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
         for step in range(initial_step + 1, num_train_steps + 1):
             is_last_step = step == num_train_steps
 
-            if True:
-                # with jax.profiler.StepTraceAnnotation("train", step_num=step):
+            # if True:
+            with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 batch = utils.reshape_batch(next(train_iter))
-                # batch = next(train_iter)
-                # import pdb
-
-                # pdb.set_trace()
 
                 if config.check_nans:
                     errs, (train_state, metrics_update) = p_train_step(
@@ -638,7 +630,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                     if train_metrics is None
                     else train_metrics.merge(metric_update)
                 )
-                # train_metrics.append(metric_update)
 
             # Quick indication that training is happening.
             logging.log_first_n(logging.INFO, "Finished training step %d.", 5, step)
@@ -650,8 +641,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
 
-            if False:
-            # if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
+            # if False:
+            if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
                 for split, eval_loader in eval_loaders.items():
                     rng, eval_rng = jax.random.split(rng)
                     with report_progress.timed("eval"):
@@ -672,39 +663,40 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                     writer.write_scalars(step, eval_metrics_cpu)
                     wandb.log(eval_metrics_cpu, step=step)
 
-                if hasattr(model, "sample_step"):
-                    with report_progress.timed("sample"):
-                        _, sample_rng = jax.random.split(rng)
-                        dummy_loader = train_loader
-                        dummy_batch = utils.reshape_batch(next(iter(dummy_loader)))
-                        dummy_inputs = dummy_batch[config.task_type]
-                        if "label" in dummy_batch:
-                            conditioning = dummy_batch["label"].astype("int32")
-                        else:
-                            conditioning = None
+                # Ignore sample step for now
+                # if hasattr(model, "sample_step"):
+                #     with report_progress.timed("sample"):
+                #         _, sample_rng = jax.random.split(rng)
+                #         dummy_loader = train_loader
+                #         dummy_batch = utils.reshape_batch(next(iter(dummy_loader)))
+                #         dummy_inputs = dummy_batch[config.task_type]
+                #         if "label" in dummy_batch:
+                #             conditioning = dummy_batch["label"].astype("int32")
+                #         else:
+                #             conditioning = None
 
-                        samples = sampling.generate(
-                            model,
-                            train_state,
-                            flax_utils.replicate(sample_rng),
-                            dummy_inputs,
-                            conditioning=conditioning,
-                        )
+                #         samples = sampling.generate(
+                #             model,
+                #             train_state,
+                #             flax_utils.replicate(sample_rng),
+                #             dummy_inputs,
+                #             conditioning=conditioning,
+                #         )
 
-                        all_samples = jax.pmap(
-                            lambda x: jax.lax.all_gather(x, "batch"), axis_name="batch"
-                        )(samples)
-                        all_samples = flax_utils.unreplicate(all_samples)
-                        all_samples = all_samples.reshape(-1, *data_shape)
-                        if config.task_type == "image":
-                            sample_grid = utils.generate_image_grids(all_samples)
-                            writer.write_images(step, {"samples": sample_grid})
-                            del all_samples, sample_grid
-                        elif config.task_type == "text":
-                            pass
-                            tokenizer = dataset_info["tokenizer"]
-                            # texts = utils.detokenize_texts(all_samples, tokenizer)
-                            # writer.write_texts(step, {"samples": texts})
+                #         all_samples = jax.pmap(
+                #             lambda x: jax.lax.all_gather(x, "batch"), axis_name="batch"
+                #         )(samples)
+                #         all_samples = flax_utils.unreplicate(all_samples)
+                #         all_samples = all_samples.reshape(-1, *data_shape)
+                #         if config.task_type == "image":
+                #             sample_grid = utils.generate_image_grids(all_samples)
+                #             writer.write_images(step, {"samples": sample_grid})
+                #             del all_samples, sample_grid
+                #         elif config.task_type == "text":
+                #             pass
+                #             tokenizer = dataset_info["tokenizer"]
+                #             # texts = utils.detokenize_texts(all_samples, tokenizer)
+                #             # writer.write_texts(step, {"samples": texts})
 
             if step % config.checkpoint_every_steps == 0 or is_last_step:
                 with report_progress.timed("checkpoint"):
