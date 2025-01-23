@@ -44,8 +44,12 @@ def get_config() -> config_dict.ConfigDict:
   config.cont_time = True
 
   config.feature_dim = 64
+
+  # Since we're adding extra mixing layers, we need to mannually tune hidden dim to match the original model.
+  config.hidden_dim = 1152 # 32 * 36
+
   config.n_layers = 12
-  config.n_layers_per_mixed = 4
+  config.n_layers_per_mixed = 6
   config.ch_mult = (1,)  # not used
   config.n_dit_layers = 0  # not used
   config.dit_num_heads = 12  # not used
@@ -98,6 +102,10 @@ def get_config() -> config_dict.ConfigDict:
 
   config.trial = 0  # Dummy for repeated runs.
   config.test_in_colab = False
+
+  config.wandbentity = "maskdiff"
+  config.wandbname = "yixiuz"
+
   return config
 
 

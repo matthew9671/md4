@@ -124,6 +124,7 @@ class DiscreteClassifier(nn.Module):
   outside_embed: bool = False
   model_sharding: bool = False
   use_hollow_transformer: bool = False
+  hidden_dim: int | None = None
 
   @nn.compact
   def __call__(self, z, t=None, cond=None, train=False):
@@ -168,6 +169,7 @@ class DiscreteClassifier(nn.Module):
             cond_type=self.cond_type,
             embed_input=not self.outside_embed,
             n_embed_classes=self.vocab_size + 1,
+            hidden_dim=self.hidden_dim, # If None, hidden dimension size is computed through multiple_of
             n_layers_per_mixed=self.n_layers_per_mixed
         )
         # [bs, seq_len] -> [bs, seq_len, |V|]

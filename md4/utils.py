@@ -30,6 +30,8 @@ import numpy as np
 from orbax import checkpoint as orbax_checkpoint
 import seaborn as sns
 
+HALF_PRECISION = "float32" # Not using mixed precision training
+FULL_PRECISION = "float32"
 
 def loss2bpt(loss_dict, data_shape):
   """Normalize loss to bits per token."""

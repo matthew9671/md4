@@ -45,6 +45,7 @@ def get_config() -> config_dict.ConfigDict:
 
   config.feature_dim = 64
   config.n_layers = 12
+
   config.ch_mult = (1,)  # not used
   config.n_dit_layers = 0  # not used
   config.dit_num_heads = 12  # not used

@@ -69,6 +69,9 @@ class HollowMD4(nn.Module):
   cont_time: bool = False
   timesteps: int = 1000
   feature_dim: int = 128
+
+  hidden_dim: int | None = None
+
   num_heads: int = 12
   antithetic_time_sampling: bool = True
   n_layers: int = 32
@@ -108,6 +111,9 @@ class HollowMD4(nn.Module):
         dit_hidden_size=self.dit_hidden_size,
         ch_mult=self.ch_mult,
         feature_dim=self.feature_dim,
+
+        hidden_dim=self.hidden_dim,
+
         num_heads=self.num_heads,
         vocab_size=self.vocab_size,
         dropout_rate=self.dropout_rate,
@@ -117,7 +123,7 @@ class HollowMD4(nn.Module):
         cond_type=self.cond_type,
         outside_embed=self.outside_embed,
         model_sharding=self.model_sharding,
-        n_layers_per_mixed=self.n_layers_per_mixed
+        n_layers_per_mixed=self.n_layers_per_mixed,
     )
 
   def forward_sample(self, x, t):

@@ -21,7 +21,9 @@ class ModelArgs:
   n_heads: int = 6
   n_kv_heads: Optional[int] = None
   output_channels: int = 1024
+
   hidden_dim: Optional[int] = None
+  
   multiple_of: int = 32  # MLP hidden layer size will be multiple of
   norm_eps: float = 1e-5
   dropout_rate: float = 0.0
@@ -144,11 +146,15 @@ class MaskedTransformerBlock(nn.Module):
 
   layer_id: int
   args: ModelArgs
+  is_mixing_layer: bool = False
 
   def setup(self):
     args = self.args
+
+    self.dim = args.dim if not self.is_mixing_layer else args.dim * 2
+
     self.attention = MaskedAttention(
-        args.dim,
+        self.dim,
         args.n_heads,
         n_kv_heads=args.n_kv_heads,
         dropout_rate=args.dropout_rate,
@@ -161,7 +167,7 @@ class MaskedTransformerBlock(nn.Module):
       w_init_scale = args.w_init_scale
 
     self.feed_forward = FeedForward(
-        dim=args.dim,
+        dim=self.dim,
         multiple_of=args.multiple_of,
         dropout_rate=args.dropout_rate,
         hidden_dim=args.hidden_dim,
@@ -178,14 +184,14 @@ class MaskedTransformerBlock(nn.Module):
         ln = nn.Sequential([
             # nn.swish,
             activation,
-            nn.Dense(6 * self.args.dim, use_bias=True),
+            nn.Dense(6 * self.dim, use_bias=True),
         ])
       elif self.args.cond_type == 'adaln_zero':
         ln = nn.Sequential([
             # nn.swish,
             activation,
             nn.Dense(
-                6 * self.args.dim,
+                6 * self.dim,
                 use_bias=True,
                 kernel_init=nn.initializers.zeros,
                 bias_init=nn.initializers.zeros,
@@ -216,10 +222,12 @@ class MaskedTransformerBlock(nn.Module):
           ffn_norm(h) * (scale_mlp + 1.0) + shift_mlp, train=train
       )
     else:
-      attention_norm = RMSNorm(self.args.dim, eps=self.args.norm_eps)
-      ffn_norm = RMSNorm(self.args.dim, eps=self.args.norm_eps)
+      # These are potentially different if we are in a mixing layer
+      attention_q_norm = RMSNorm(self.dim, eps=self.args.norm_eps)
+      attention_kv_norm = RMSNorm(self.args.dim, eps=self.args.norm_eps)
+      ffn_norm = RMSNorm(self.dim, eps=self.args.norm_eps)
       h = x_q + self.attention(
-          attention_norm(x_q), attention_norm(x_kv), freqs_cos, freqs_sin, attn_mask, 
+          attention_q_norm(x_q), attention_kv_norm(x_kv), freqs_cos, freqs_sin, attn_mask, 
           freqs_cos_kv=freqs_cos_kv, 
           freqs_sin_kv=freqs_sin_kv,
           train=train
@@ -254,6 +262,10 @@ class HollowTransformer(nn.Module):
     freqs_cos, freqs_sin = precompute_freqs_cis(
         args.dim // args.n_heads, seqlen
     )
+    # The mixing layers are thicker
+    freqs_cos_m, freqs_sin_m = precompute_freqs_cis(
+        args.dim // args.n_heads * 2, seqlen
+    )
 
     freqs_cos = freqs_cos[:seqlen]
     freqs_sin = freqs_sin[:seqlen]
@@ -263,15 +275,20 @@ class HollowTransformer(nn.Module):
     freqs_sin_f = freqs_sin[:-2]
     freqs_cos_b = freqs_cos[2:]
     freqs_sin_b = freqs_sin[2:]
-    freqs_cos_m = freqs_cos[1:-1]
-    freqs_sin_m = freqs_sin[1:-1]
-    freqs_cos_m_kv = jnp.concatenate([freqs_cos_f, freqs_cos_b], axis=0)
-    freqs_sin_m_kv = jnp.concatenate([freqs_sin_f, freqs_sin_b], axis=0)
+
+    freqs_cos_m_kv = jnp.concatenate([freqs_cos_m[:-2], freqs_cos_m[2:]], axis=0)
+    freqs_sin_m_kv = jnp.concatenate([freqs_sin_m[:-2], freqs_sin_m[2:]], axis=0)
+    freqs_cos_m = freqs_cos_m[1:seqlen-1]
+    freqs_sin_m = freqs_sin_m[1:seqlen-1]
+
     hf = h[:,:-2]
     hb = h[:,2:]
-    # Use sum instead of concatenation so we can keep dimension constant
-    hm = hf + hb #jnp.concatenate([hf, hb], axis=2)
-    mask = jnp.full((hm.shape[1], hm.shape[1]), -jnp.inf)
+
+    hshape = hf.shape
+    # Mixed layer has double the “thickness"
+    hm = jnp.zeros(hshape[:-1] + (hshape[-1] * 2,))
+
+    mask = jnp.full((hshape[1], hshape[1]), -jnp.inf)
     # Note that here the fill value is -inf so the values we take become the mask
     forward_mask = jnp.triu(mask, k=1)
     backward_mask = jnp.tril(mask, k=-1)
@@ -290,7 +307,9 @@ class HollowTransformer(nn.Module):
       # Mixing stream
       if (layer + 1) % args.n_layers_per_mixed == 0:
         hfb = jnp.concatenate([hf, hb], axis=1)
-        hm = MaskedTransformerBlock(layer_id, args)(
+        hm += jnp.concatenate([hf, hb], axis=-1)
+
+        hm = MaskedTransformerBlock(layer_id, args, is_mixing_layer=True)(
           hm, hfb, freqs_cos_m, freqs_sin_m, mixing_mask, 
           freqs_cos_kv=freqs_cos_m_kv, freqs_sin_kv=freqs_sin_m_kv,
           cond=cond, train=train
@@ -329,7 +348,7 @@ class HollowTransformer(nn.Module):
           output_channels, use_bias=False, kernel_init=nn.initializers.zeros
       )(output_norm(h) * (scale_out + 1) + shift_out)
     else:
-      h = RMSNorm(args.dim, args.norm_eps)(h)
+      h = RMSNorm(args.dim * 2, args.norm_eps)(h)
       logits = nn.Dense(
           features=output_channels,
           use_bias=False,

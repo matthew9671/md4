@@ -21,7 +21,6 @@ from md4.models.diffusion import genmd4
 from md4.models.diffusion import md4
 from md4.models.diffusion import hollow_md4
 
-
 def get_model(config: ml_collections.ConfigDict):
   """Get model instances."""
   if config.model_type == "md4":
@@ -80,9 +79,14 @@ def get_model(config: ml_collections.ConfigDict):
         cont_time=config.cont_time,
         timesteps=config.timesteps,
         feature_dim=config.feature_dim,
+
+        hidden_dim=config.hidden_dim,
+
         num_heads=config.num_heads,
         n_layers=config.n_layers,
+
         n_layers_per_mixed=config.n_layers_per_mixed,
+        
         n_dit_layers=config.n_dit_layers,
         dit_num_heads=config.dit_num_heads,
         dit_hidden_size=config.dit_hidden_size,
