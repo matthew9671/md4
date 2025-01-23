@@ -19,6 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 import copy
 import functools
 from typing import Any
+import jmp
 
 from absl import logging
 from clu import metric_writers
@@ -46,6 +47,7 @@ from md4.models import utils as model_utils
 
 import wandb
 
+
 @flax.struct.dataclass
 class TrainState:
     """State of the model and the training.
@@ -59,6 +61,7 @@ class TrainState:
     ema_params: Any
     opt_state: optax.OptState
     state: Any
+    loss_scale: jmp.LossScale
 
 
 def merge_batch_stats(replicated_state: TrainState) -> TrainState:
@@ -101,7 +104,7 @@ def create_train_state(
     rng: jnp.ndarray,
     input_shape: Sequence[int] | Mapping[str, Sequence[int]],
     schedule_fn: Callable[[Any], Any],
-    mixed_precision_training: bool = True
+    mixed_precision_training: bool = True,
 ) -> tuple[nn.Module, optax.GradientTransformation, TrainState, Any]:
     """Create and initialize the model."""
     model = model_utils.get_model(config)
@@ -125,10 +128,10 @@ def create_train_state(
     logging.info("metric_keys: %s", metric_keys)
     metrics_class = create_metrics_class_from_keys(metric_keys)
     state, params = flax.core.pop(variables, "params")
-    
+
     # We're using half precision by default
-    params = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), params)
-        
+    # params = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), params)
+
     del variables
     parameter_overview.log_parameter_overview(
         state, msg="############# state #############"
@@ -156,6 +159,7 @@ def create_train_state(
             ema_params=copy.deepcopy(params) if config.ema_rate > 0.0 else None,
             opt_state=optimizer.init(params),
             state=state,
+            loss_scale=jmp.DynamicLossScale(2.0**15),
         ),
         metrics_class,
     )
@@ -208,7 +212,17 @@ def get_learning_rate(
     return lr * warmup  # pytype: disable=bad-return-type  # jax-types
 
 
-def loss_fn(params, state, rng, model, batch, train=False):
+def loss_fn(
+    params,
+    state,
+    rng,
+    model,
+    batch,
+    loss_scale: jmp.LossScale,
+    train=False,
+):
+    # cast params to half precision
+    params = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), params)
     """Loss function."""
     rng, sample_rng = jax.random.split(rng)
     rngs = {"sample": sample_rng}
@@ -245,8 +259,10 @@ def loss_fn(params, state, rng, model, batch, train=False):
         )
 
     loss = metrics_dict["loss"]
+    loss = loss_scale.scale(loss)
     if train:
         return loss, (new_state, metrics_dict)
+
     return loss, metrics_dict
 
 
@@ -254,7 +270,10 @@ def loss_fn(params, state, rng, model, batch, train=False):
 def merge_metrics(a_tree, b_tree):
     return jax.tree.map(lambda a, b: a + b, a_tree, b_tree)
 
+
 import time
+
+
 def train_step(
     model: nn.Module,
     optimizer: optax.GradientTransformation,
@@ -307,11 +326,19 @@ def train_step(
             mb = get_microbatch(batch, loop_cnt)
 
             (_, (new_state, metrics_dict)), grads = grad_fn(
-                train_state.params, train_state_state, mbrng, model, mb, train=True
+                train_state.params,
+                train_state_state,
+                mbrng,
+                model,
+                mb,
+                train_state.loss_scale,
+                train=True,
             )
-            
+
+            grads = train_state.loss_scale.unscale(grads)
+
             # Cast to full precision for stability when accumulating gradients
-            grads = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), grads)
+            grads = jax.tree_map(lambda x: x.astype(utils.FULL_PRECISION), grads)
 
             return metrics_dict, grads, new_state
 
@@ -363,13 +390,33 @@ def train_step(
     # Compute average gradient across multiple workers.
     grads = jax.lax.pmean(grads, axis_name="batch")
 
+    grad_norm = jnp.sqrt(
+        sum(jnp.sum(jnp.square(g)) for g in jax.tree_util.tree_leaves(grads))
+    )
+
     # After accumulating gradients, cast back to half precision
-    grads = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), grads)
+
+    # grads = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), grads)
+
+    grads_finite = jmp.all_finite(grads)
+    # Adjust our loss scale depending on whether gradients were finite. The
+    # loss scale will be periodically increased if gradients remain finite and
+    # will be decreased if not.
+    loss_scale = train_state.loss_scale.adjust(grads_finite)
+    # Only apply our optimizer if grads are finite, if any element of any
+    # gradient is non-finite the whole update is discarded.
 
     updates, new_opt_state = optimizer.update(
         grads, train_state.opt_state, train_state.params
     )
-    new_params = optax.apply_updates(train_state.params, updates)
+    # new_params = optax.apply_updates(train_state.params, updates)
+    new_params = jmp.select_tree(
+        grads_finite,
+        optax.apply_updates(train_state.params, updates),
+        train_state.params,
+    )
+
+    # new_params = optax.apply_updates(train_state.params, updates)
 
     if ema_rate > 0.0:
         new_ema_params = jax.tree_util.tree_map(
@@ -387,13 +434,14 @@ def train_step(
         ema_params=new_ema_params,
         opt_state=new_opt_state,
         state=new_state,
+        loss_scale=loss_scale,
     )
 
     metrics_update = train_metrics_class.gather_from_model_output(
         learning_rate=learning_rate_fn(train_state.step),
         **metrics_dict,
     )
-    return new_train_state, metrics_update
+    return new_train_state, metrics_update, grad_norm
 
 
 def eval_step(
@@ -463,7 +511,9 @@ import tensorflow as tf
 
 
 def create_datasets(config, data_seed):
-    data_train = np.load("data_dir/openwebtext_np_train.npy", allow_pickle=True)
+    data_train = np.load(
+        "data_dir/openwebtext_np_eval.npy", allow_pickle=True
+    )  # TODO change to train
     data_eval = np.load("data_dir/openwebtext_np_eval.npy", allow_pickle=True)
     train_ds = tf.data.Dataset.from_tensor_slices({"text": data_train})
     eval_ds = tf.data.Dataset.from_tensor_slices({"text": data_eval})
@@ -507,8 +557,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
 
     # This is not really useful if we're already storing the parameters in half precision
     # jax.config.update("jax_default_matmul_precision", utils.HALF_PRECISION)
-    logging.info("Using mixed precision training. Half precision: " + utils.HALF_PRECISION)
-
+    logging.info(
+        "Using mixed precision training. Half precision: " + utils.HALF_PRECISION
+    )
 
     # Learning rate schedule.
     assert config.batch_size % jax.device_count() == 0
@@ -579,6 +630,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
         ema_rate=config.ema_rate,
         num_microbatches=config.get("num_microbatches", None),
     )
+
     if config.check_nans:
         train_step_func = checkify.checkify(
             train_step_func, errors=checkify.float_checks
@@ -604,7 +656,6 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             periodic_actions.Profile(num_profile_steps=5, logdir=workdir),
         ]
     train_metrics = None
-
     # Unreplicating from TPU is costly, so we only do it once at the start.
     initial_step = int(flax.jax_utils.unreplicate(train_state.step))
 
@@ -618,14 +669,19 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 batch = utils.reshape_batch(next(train_iter))
 
                 if config.check_nans:
-                    errs, (train_state, metrics_update) = p_train_step(
+                    errs, (train_state, metrics_update, grad_norm) = p_train_step(
                         train_state=train_state, batch=batch
                     )
                     errs.throw()
                 else:
-                    train_state, metrics_update = p_train_step(
+                    train_state, metrics_update, grad_norm = p_train_step(
                         train_state=train_state, batch=batch
                     )
+                if utils.USE_PDB:
+                    import pdb
+
+                    pdb.set_trace()
+
                 metric_update = flax_utils.unreplicate(metrics_update)
 
                 train_metrics = (
@@ -639,13 +695,15 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             for h in hooks:
                 h(step)
 
+            # if True:
             if step % config.log_loss_every_steps == 0 or is_last_step:
                 wandb.log(train_metrics.compute(), step=step)
+                wandb.log({"grad_norm": grad_norm.mean()}, step=step)
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
 
-            # if False:
-            if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
+            if False:  # ToDo
+                # if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
                 for split, eval_loader in eval_loaders.items():
                     rng, eval_rng = jax.random.split(rng)
                     with report_progress.timed("eval"):
@@ -700,8 +758,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 #             tokenizer = dataset_info["tokenizer"]
                 #             # texts = utils.detokenize_texts(all_samples, tokenizer)
                 #             # writer.write_texts(step, {"samples": texts})
-
-            if step % config.checkpoint_every_steps == 0 or is_last_step:
+            if False:  # TODO
+                # if step % config.checkpoint_every_steps == 0 or is_last_step:
                 with report_progress.timed("checkpoint"):
                     train_state = merge_batch_stats(train_state)
                     checkpoint_manager.save(
