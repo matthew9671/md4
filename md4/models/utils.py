@@ -74,6 +74,10 @@ def get_model(config: ml_collections.ConfigDict):
         time_features=config.time_features,
     )
   elif config.model_type == "hollow_md4":
+
+    from absl import logging
+    logging.info("Using Hollow MD4")
+
     return hollow_md4.HollowMD4(
         config.data_shape,
         cont_time=config.cont_time,

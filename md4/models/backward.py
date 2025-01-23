@@ -156,6 +156,7 @@ class DiscreteClassifier(nn.Module):
         # [bs, seq_len] -> [bs, seq_len, |V|]
         net = sharded_transformer.Transformer(args)
       elif self.use_hollow_transformer:
+
         args = hollow_transformer.ModelArgs(
             dim=self.feature_dim * self.num_heads,
             n_layers=self.n_layers,
@@ -172,8 +173,11 @@ class DiscreteClassifier(nn.Module):
             hidden_dim=self.hidden_dim, # If None, hidden dimension size is computed through multiple_of
             n_layers_per_mixed=self.n_layers_per_mixed
         )
+
+        # import pdb; pdb.set_trace()
+
         # [bs, seq_len] -> [bs, seq_len, |V|]
-        net = transformer.Transformer(args)
+        net = hollow_transformer.HollowTransformer(args)
       else:
         args = transformer.ModelArgs(
             dim=self.feature_dim * self.num_heads,

@@ -124,6 +124,8 @@ class HollowMD4(nn.Module):
         outside_embed=self.outside_embed,
         model_sharding=self.model_sharding,
         n_layers_per_mixed=self.n_layers_per_mixed,
+
+        use_hollow_transformer=True,
     )
 
   def forward_sample(self, x, t):

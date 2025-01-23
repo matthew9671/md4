@@ -199,9 +199,23 @@ class MaskedTransformerBlock(nn.Module):
         ])
       else:
         raise NotImplementedError()
+
       (shift_att, scale_att, gate_att, shift_mlp, scale_mlp, gate_mlp) = (
           jnp.split(ln(cond)[:, None, :], 6, axis=-1)
       )
+
+      if self.is_mixing_layer:
+        scale1, scale2 = jnp.split(scale_att, 2, axis=-1)
+        shift1, shift2 = jnp.split(shift_att, 2, axis=-1)
+        # Average the scale and shift values
+        # If we really want to be fancy, we could apply
+        # scale and shift separately to the forward backward components
+        scale_att_kv = (scale1 + scale2) / 2
+        shift_att_kv = (shift1 + shift2) / 2
+      else:
+        scale_att_kv = scale_att
+        shift_att_kv = shift_att
+
       attention_norm = nn.LayerNorm(
           epsilon=self.args.norm_eps, use_bias=False, use_scale=False
       )
@@ -210,7 +224,7 @@ class MaskedTransformerBlock(nn.Module):
       )
       h = x_q + gate_att * self.attention(
           attention_norm(x_q) * (scale_att + 1.0) + shift_att,
-          attention_norm(x_kv) * (scale_att + 1.0) + shift_att,
+          attention_norm(x_kv) * (scale_att_kv + 1.0) + shift_att_kv,
           freqs_cos,
           freqs_sin,
           attn_mask,
@@ -296,6 +310,8 @@ class HollowTransformer(nn.Module):
 
     layer_id = 0
 
+    # import pdb; pdb.set_trace()
+
     for layer in range(args.n_layers):
 
       mtb = MaskedTransformerBlock(layer_id, args)
@@ -335,7 +351,7 @@ class HollowTransformer(nn.Module):
             # nn.swish,
             activation,
             nn.Dense(
-                2 * args.dim,
+                4 * args.dim,
                 use_bias=True,
                 kernel_init=nn.initializers.zeros,
                 bias_init=nn.initializers.zeros,
