@@ -46,6 +46,7 @@ from md4.models import utils as model_utils
 
 import wandb
 
+
 @flax.struct.dataclass
 class TrainState:
     """State of the model and the training.
@@ -101,7 +102,7 @@ def create_train_state(
     rng: jnp.ndarray,
     input_shape: Sequence[int] | Mapping[str, Sequence[int]],
     schedule_fn: Callable[[Any], Any],
-    mixed_precision_training: bool = True
+    mixed_precision_training: bool = True,
 ) -> tuple[nn.Module, optax.GradientTransformation, TrainState, Any]:
     """Create and initialize the model."""
     model = model_utils.get_model(config)
@@ -125,10 +126,7 @@ def create_train_state(
     logging.info("metric_keys: %s", metric_keys)
     metrics_class = create_metrics_class_from_keys(metric_keys)
     state, params = flax.core.pop(variables, "params")
-    
-    # We're using half precision by default
-    params = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), params)
-        
+
     del variables
     parameter_overview.log_parameter_overview(
         state, msg="############# state #############"
@@ -254,7 +252,10 @@ def loss_fn(params, state, rng, model, batch, train=False):
 def merge_metrics(a_tree, b_tree):
     return jax.tree.map(lambda a, b: a + b, a_tree, b_tree)
 
+
 import time
+
+
 def train_step(
     model: nn.Module,
     optimizer: optax.GradientTransformation,
@@ -309,9 +310,6 @@ def train_step(
             (_, (new_state, metrics_dict)), grads = grad_fn(
                 train_state.params, train_state_state, mbrng, model, mb, train=True
             )
-            
-            # Cast to full precision for stability when accumulating gradients
-            grads = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), grads)
 
             return metrics_dict, grads, new_state
 
@@ -362,9 +360,6 @@ def train_step(
 
     # Compute average gradient across multiple workers.
     grads = jax.lax.pmean(grads, axis_name="batch")
-
-    # After accumulating gradients, cast back to half precision
-    grads = jax.tree_map(lambda x: x.astype(utils.HALF_PRECISION), grads)
 
     updates, new_opt_state = optimizer.update(
         grads, train_state.opt_state, train_state.params
@@ -507,8 +502,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
 
     # This is not really useful if we're already storing the parameters in half precision
     # jax.config.update("jax_default_matmul_precision", utils.HALF_PRECISION)
-    logging.info("Using mixed precision training. Half precision: " + utils.HALF_PRECISION)
-
+    logging.info(
+        "Using mixed precision training. Half precision: " + utils.HALF_PRECISION
+    )
 
     # Learning rate schedule.
     assert config.batch_size % jax.device_count() == 0
@@ -613,8 +609,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
         for step in range(initial_step + 1, num_train_steps + 1):
             is_last_step = step == num_train_steps
 
-            # if True:
-            with jax.profiler.StepTraceAnnotation("train", step_num=step):
+            if True:
+                # with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 batch = utils.reshape_batch(next(train_iter))
 
                 if config.check_nans:
@@ -701,7 +697,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 #             # texts = utils.detokenize_texts(all_samples, tokenizer)
                 #             # writer.write_texts(step, {"samples": texts})
 
-            if step==1 or step % config.checkpoint_every_steps == 0 or is_last_step:
+            if step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step:
                 with report_progress.timed("checkpoint"):
                     train_state = merge_batch_stats(train_state)
                     checkpoint_manager.save(
