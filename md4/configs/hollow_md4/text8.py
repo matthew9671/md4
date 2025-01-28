@@ -106,7 +106,7 @@ def get_config() -> config_dict.ConfigDict:
     config.wandbentity = "fengc"
     config.wandbname = "maskdiff"
 
-    config.loss_type = "mixed"  # mask/nonmask/mixed
+    config.loss_type = "masked"  # masked/nonmask/mixed
 
     return config
 
