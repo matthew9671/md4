@@ -44,8 +44,8 @@ _GPT2_TOKENIZER = "gpt2"
 _OWT_DATASETS = dict(
     # OSS version. Please prepare the OWT datasets using the following command:
     # python ./prepare_openwebtext_data.py
-    dataset_train_path=("./data_dir/openwebtext_splits_1024_train"),
-    dataset_eval_path=("./data_dir/openwebtext_splits_1024_eval"),
+    dataset_train_path=("/home/yixiuz/data_dir/openwebtext_splits_1024_train"),
+    dataset_eval_path=("/home/yixiuz/data_dir/openwebtext_splits_1024_eval"),
 )
 
 DATA_DIR = "/home/ubuntu/md4/data_dir"
