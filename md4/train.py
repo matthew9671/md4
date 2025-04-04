@@ -92,7 +92,8 @@ def _get_checkpoint_manager(
         checkpoint_dir,
         checkpointers=checkpointers,
         options=orbax_checkpoint.CheckpointManagerOptions(
-            create=True, keep_period=keep_period
+            create=True, keep_period=keep_period,
+            single_host_load_and_broadcast=True
         ),
     )
 
