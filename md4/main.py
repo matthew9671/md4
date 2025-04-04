@@ -38,6 +38,7 @@ config_flags.DEFINE_config_file(
     "config", None, "Training configuration.", lock_config=True)
 flags.DEFINE_string("workdir", None, "Work unit directory.")
 flags.DEFINE_boolean("sharded", False, "Whether to use sharded training.")
+flags.DEFINE_boolean("sample", False, "Whether to sample given learned model.")
 flags.mark_flags_as_required(["config", "workdir"])
 # Flags --jax_backend_target and --jax_xla_backend are available through JAX.
 
@@ -64,10 +65,13 @@ def main(argv):
   platform.work_unit().create_artifact(platform.ArtifactType.DIRECTORY,
                                        FLAGS.workdir, "workdir")
 
-  if FLAGS.sharded:
-    sharded_train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
+  if FLAGS.sample:
+    train.sample_and_evaluate(FLAGS.config, FLAGS.workdir)
   else:
-    train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
+    if FLAGS.sharded:
+      sharded_train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
+    else:
+      train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
 
 
 if __name__ == "__main__":

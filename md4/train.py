@@ -475,6 +475,84 @@ def create_datasets(config, data_seed):
     eval_ds = eval_ds.prefetch(tf.data.experimental.AUTOTUNE)
     return train_ds, {"eval": eval_ds}, {"tokenizer": None}
 
+def sample_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLike):
+    """Runs a training and evaluation loop.
+
+    Args:
+      config: Configuration to use.
+      workdir: Working directory for checkpoints and TF summaries. If this
+        contains checkpoint training will be resumed from the latest checkpoint.
+    """
+
+    workdir = epath.Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    rng = utils.get_rng(config.seed)
+    logging.info("Using random seed %s.", rng)
+
+    rng, data_seed = jax.random.split(rng)
+    data_seed = int(
+        jax.random.randint(data_seed, [], minval=0, maxval=np.iinfo(np.int32).max)
+    )
+    # The input pipeline runs on each process and loads data for local TPUs.
+    create_datasets = (
+        input_pipeline_v2.create_datasets
+        if config.get("use_v2_input_pipeline", None)
+        else input_pipeline.create_datasets
+    )
+    train_loader, eval_loaders, dataset_info = create_datasets(config, data_seed)
+
+    train_iter = iter(train_loader)
+
+    # Initialize model.
+    rng, model_rng = jax.random.split(rng)
+    data_shape = input_pipeline.get_data_shape(config)
+    # Note: parameters are initialized in half precision if mixed_precision_training=True
+    # We could also try casting them to half precision here
+    model, optimizer, train_state, metrics_class = (
+        create_train_state(  # pylint: disable=invalid-name
+            config,
+            model_rng,
+            input_shape=(per_device_batch_size // config.num_microbatches,)
+            + data_shape,
+        )
+    )
+
+    # Set up checkpointing of the model and the input pipeline.
+    checkpoint_manager = _get_checkpoint_manager(config, workdir)
+
+    # Retrieve data from previous checkpoints if possible.
+    checkpointed_state = dict(train_state=train_state, train_iter=train_iter)
+    if checkpoint_manager.latest_step() is not None:
+        logging.info("Found checkpoint!")
+        checkpointed_state = checkpoint_manager.restore(
+            checkpoint_manager.latest_step(), items=checkpointed_state
+        )
+    else:
+        logging.info("No checkpoint found!")
+        return
+        
+    train_state = checkpointed_state["train_state"]
+    train_iter = checkpointed_state["train_iter"]
+
+    dummy_loader = train_loader
+    dummy_batch = utils.reshape_batch(next(iter(dummy_loader)))
+    dummy_inputs = dummy_batch[config.task_type]
+    if "label" in dummy_batch:
+        conditioning = dummy_batch["label"].astype("int32")
+    else:
+        conditioning = None
+
+    # Distribute training.
+    train_state = flax_utils.replicate(train_state)
+    samples = sampling.generate(
+                            model,
+                            train_state,
+                            flax_utils.replicate(rng),
+                            dummy_inputs,
+                            conditioning=conditioning)
+    logging.info(samples)
+
 
 def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLike):
     """Runs a training and evaluation loop.
@@ -559,12 +637,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     # Retrieve data from previous checkpoints if possible.
     checkpointed_state = dict(train_state=train_state, train_iter=train_iter)
     if checkpoint_manager.latest_step() is not None:
-        logging.log("Found checkpoint!")
+        logging.info("Found checkpoint!")
         checkpointed_state = checkpoint_manager.restore(
             checkpoint_manager.latest_step(), items=checkpointed_state
         )
-
-    return
         
     train_state = checkpointed_state["train_state"]
     train_iter = checkpointed_state["train_iter"]
