@@ -48,7 +48,7 @@ def get_config() -> config_dict.ConfigDict:
     # Since we're adding extra mixing layers, we need to mannually tune hidden dim to match the original model.
     config.hidden_dim = 2048  # 32 * 36
 
-    config.n_layers = 12
+    config.n_layers = 36
     config.n_layers_per_mixed = 12
     config.ch_mult = (1,)  # not used
     config.n_dit_layers = 0  # not used
@@ -75,7 +75,7 @@ def get_config() -> config_dict.ConfigDict:
     # Evaluates for a full epoch if num_eval_steps==-1.
     config.num_eval_steps = -1
     config.batch_size = 512
-    config.num_microbatches = 1
+    config.num_microbatches = 4
     config.per_device_batch_size = -1
     # If batches should be added to evaluate the entire dataset.
     config.eval_pad_last_batch = False

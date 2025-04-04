@@ -48,7 +48,7 @@ _OWT_DATASETS = dict(
     dataset_eval_path=("./data_dir/openwebtext_splits_1024_eval"),
 )
 
-DATA_DIR = "/home/ubuntu/md4/data_dir"
+DATA_DIR = "/root/md4/data_dir"
 
 class Text8Tokenizer:
   """Simple text8 tokenizer."""

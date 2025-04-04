@@ -44,7 +44,7 @@ from md4 import sampling
 from md4 import utils
 from md4.models import utils as model_utils
 
-import wandb
+# import wandb
 
 
 @flax.struct.dataclass
@@ -484,12 +484,12 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
       workdir: Working directory for checkpoints and TF summaries. If this
         contains checkpoint training will be resumed from the latest checkpoint.
     """
-    wandb.init(
-        entity=config.wandbentity,
-        project="maskdiff",
-        config=config,
-        name=config.wandbname,
-    )
+    # wandb.init(
+    #     entity=config.wandbentity,
+    #     project="maskdiff",
+    #     config=config,
+    #     name=config.wandbname,
+    # )
 
     workdir = epath.Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -636,7 +636,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 h(step)
 
             if step % config.log_loss_every_steps == 0 or is_last_step:
-                wandb.log(train_metrics.compute(), step=step)
+                # wandb.log(train_metrics.compute(), step=step)
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
 
@@ -660,7 +660,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                         split + "_" + k: v for k, v in eval_metrics_cpu.items()
                     }
                     writer.write_scalars(step, eval_metrics_cpu)
-                    wandb.log(eval_metrics_cpu, step=step)
+                    # wandb.log(eval_metrics_cpu, step=step)
 
                 # Ignore sample step for now
                 # if hasattr(model, "sample_step"):
