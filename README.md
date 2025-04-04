@@ -19,11 +19,7 @@ export PYTHONPATH="$PYTHONPATH:~/md4"
 cd md4
 mkdir data_dir
 cd data_dir
-gsutil cp  gs://maskdiff/openwebtext/openwebtext_np_train.npy .
-gsutil cp  gs://maskdiff/openwebtext/openwebtext_np_eval.npy .
-mkdir text8
-cd text8
-wget http://mattmahoney.net/dc/text8.zip
+gsutil cp -r gs://maskdiff/protein/ .
 
 ```
 
