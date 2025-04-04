@@ -89,7 +89,7 @@ def get_config() -> config_dict.ConfigDict:
     # for topp sampler
     config.topp = 0.98
 
-    config.log_loss_every_steps = 500
+    config.log_loss_every_steps = 10
     config.eval_every_steps = 5000
     config.checkpoint_every_steps = 5000
     config.checkpoint_keep_period = 10000
