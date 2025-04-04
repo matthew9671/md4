@@ -507,8 +507,7 @@ def sample_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLi
     # Initialize model.
     rng, model_rng = jax.random.split(rng)
     data_shape = input_pipeline.get_data_shape(config)
-    # Note: parameters are initialized in half precision if mixed_precision_training=True
-    # We could also try casting them to half precision here
+    per_device_batch_size = config.batch_size // jax.device_count()
     model, optimizer, train_state, metrics_class = (
         create_train_state(  # pylint: disable=invalid-name
             config,
