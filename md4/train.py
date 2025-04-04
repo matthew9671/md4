@@ -93,7 +93,7 @@ def _get_checkpoint_manager(
         checkpointers=checkpointers,
         options=orbax_checkpoint.CheckpointManagerOptions(
             create=True, keep_period=keep_period,
-            single_host_load_and_broadcast=True
+            # single_host_load_and_broadcast=True
         ),
     )
 
@@ -533,7 +533,9 @@ def sample_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLi
     checkpoint_manager = _get_checkpoint_manager(config, workdir)
 
     # Retrieve data from previous checkpoints if possible.
-    checkpointed_state = dict(train_state=train_state, train_iter=train_iter)
+    checkpointed_state = dict(train_state=train_state, 
+                            #   train_iter=train_iter
+                              )
     if checkpoint_manager.latest_step() is not None:
         logging.info("Found checkpoint!")
         checkpointed_state = checkpoint_manager.restore(
