@@ -490,6 +490,16 @@ def sample_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLi
     rng = utils.get_rng(config.seed)
     logging.info("Using random seed %s.", rng)
 
+
+    num_train_steps = input_pipeline.get_num_train_steps(config)
+    schedule_fn = functools.partial(
+        get_learning_rate,
+        base_learning_rate=config.learning_rate,
+        num_steps=num_train_steps,
+        warmup_steps=config.warmup_steps,
+        schedule_type=config.learning_rate_schedule,
+    )
+
     rng, data_seed = jax.random.split(rng)
     data_seed = int(
         jax.random.randint(data_seed, [], minval=0, maxval=np.iinfo(np.int32).max)
@@ -514,6 +524,7 @@ def sample_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLi
             model_rng,
             input_shape=(per_device_batch_size // config.num_microbatches,)
             + data_shape,
+            schedule_fn=schedule_fn
         )
     )
 
@@ -549,7 +560,8 @@ def sample_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLi
                             train_state,
                             flax_utils.replicate(rng),
                             dummy_inputs,
-                            conditioning=conditioning)
+                            conditioning=conditioning,
+                            )
     logging.info(samples)
 
 
