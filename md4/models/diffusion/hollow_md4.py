@@ -444,7 +444,7 @@ class HollowMD4(nn.Module):
         
         # The forward_backward_corrector shouldn't be used when s is 0
         zs = jax.lax.cond(s == 0, lambda x: x, 
-            lambda x: _euler_update(rng_cstep, x, rates * self.uninformed_step_size), zs)
+            lambda x: _euler_update(rng_cstep, x, rates * self.uninformed_step_size * (t-s)), zs)
 
         return zs
 
