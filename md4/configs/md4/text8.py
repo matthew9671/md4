@@ -102,7 +102,7 @@ def get_config() -> config_dict.ConfigDict:
     config.wandbentity = "maskdiff"
     config.wandbname = "yixiuz"
 
-    config.vocab_dir = "/home/fengchen/md4/data_dir/text8/text8_vocab.pkl"
+    config.vocab_dir = "/dir_to/text8_vocab.pkl"
 
     return config
 
