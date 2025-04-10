@@ -98,8 +98,8 @@ def _get_checkpoint_manager(
         checkpointers=checkpointers,
         options=orbax_checkpoint.CheckpointManagerOptions(
             create=True, keep_period=keep_period,
-            enable_async_checkpointing=False,
-            async_options=orbax_checkpoint.AsyncOptions(barrier_sync_fn=_dummy_barrier_sync_fn)
+            # enable_async_checkpointing=False,
+            # async_options=orbax_checkpoint.AsyncOptions(barrier_sync_fn=_dummy_barrier_sync_fn)
             # single_host_load_and_broadcast=True
         ),
     )
@@ -801,7 +801,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 #             # texts = utils.detokenize_texts(all_samples, tokenizer)
                 #             # writer.write_texts(step, {"samples": texts})
 
-            if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step) and jax.process_index() == 0:
+            if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step):
                 with report_progress.timed("checkpoint"):
                     train_state = merge_batch_stats(train_state)
                     checkpoint_manager.save(
