@@ -87,7 +87,7 @@ def get_config() -> config_dict.ConfigDict:
 
   config.log_loss_every_steps = 500
   config.eval_every_steps = 5000
-  config.checkpoint_every_steps = 5000
+  config.checkpoint_every_steps = 500 # for debugging
   config.checkpoint_keep_period = 10000
 
   # Single integer or tuple. If None will use (XManager ID, work unit).
