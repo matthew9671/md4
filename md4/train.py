@@ -730,8 +730,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             for h in hooks:
                 h(step)
 
-            if (step % config.log_loss_every_steps == 0 or is_last_step)
-                and jax.process_index() == 0:
+            if ((step % config.log_loss_every_steps == 0 or is_last_step)
+                and jax.process_index() == 0):
                 wandb.log(train_metrics.compute(), step=step)
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
