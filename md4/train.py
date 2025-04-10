@@ -576,13 +576,12 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
       workdir: Working directory for checkpoints and TF summaries. If this
         contains checkpoint training will be resumed from the latest checkpoint.
     """
-    # Disable wandb for testing
-    # wandb.init(
-    #     entity=config.wandbentity,
-    #     project="maskdiff",
-    #     config=config,
-    #     name=config.wandbname,
-    # )
+    wandb.init(
+        entity=config.wandbentity,
+        project="SIC-text8",
+        config=config,
+        # name=config.wandbname,
+    )
 
     workdir = epath.Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
