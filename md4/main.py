@@ -38,7 +38,10 @@ from md4 import train
 import jax.distributed
 
 # Parameters should be automatically generated?
-jax.distributed.initialize()
+jax.distributed.initialize(
+  num_processes=jax.process_count(),
+  process_id=jax.process_index(),
+)
 
 FLAGS = flags.FLAGS
 
