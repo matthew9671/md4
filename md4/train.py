@@ -801,7 +801,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 #             # texts = utils.detokenize_texts(all_samples, tokenizer)
                 #             # writer.write_texts(step, {"samples": texts})
 
-            if step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step:
+            if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step) and jax.process_index() == 0:
                 with report_progress.timed("checkpoint"):
                     train_state = merge_batch_stats(train_state)
                     checkpoint_manager.save(
