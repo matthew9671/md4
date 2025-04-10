@@ -23,7 +23,7 @@ from absl import app
 from absl import flags
 from absl import logging
 
-logging.set_verbosity(absl.logging.INFO)
+logging.set_verbosity(logging.INFO)
 
 # Required import to setup work units when running through XManager.
 from clu import platform
