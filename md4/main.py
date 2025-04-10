@@ -42,7 +42,7 @@ import socket
 # Parameters should be automatically generated?
 jax.distributed.initialize(
   num_processes=4,
-  process_id=socket.gethostname(),
+  process_id=int(socket.gethostname()[-1]),
 )
 
 FLAGS = flags.FLAGS
