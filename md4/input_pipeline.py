@@ -35,7 +35,9 @@ import transformers
 try:
   import cv2
 except ImportError:
-  print("cv2 not found")
+  # print("cv2 not found")
+  # Suppress the import error for cv2
+  pass
 FlatFeatures = dict[str, Any]
 
 _DataSet = Union[grain.MapDataset, grain.DataLoader, grain.IterDataset]

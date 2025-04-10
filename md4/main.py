@@ -60,6 +60,8 @@ def main(argv):
   logging.info("JAX process: %d / %d", jax.process_index(), jax.process_count())
   logging.info("JAX devices: %r", jax.devices())
 
+  print("JAX process: %d / %d", jax.process_index(), jax.process_count())
+
   platform.work_unit().set_task_status(f"process_index: {jax.process_index()}, "
                                        f"process_count: {jax.process_count()}")
   platform.work_unit().create_artifact(platform.ArtifactType.DIRECTORY,
