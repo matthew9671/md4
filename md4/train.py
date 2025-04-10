@@ -37,6 +37,7 @@ import ml_collections
 import numpy as np
 import optax
 from orbax import checkpoint as orbax_checkpoint
+import pickle
 
 from md4 import input_pipeline
 from md4 import input_pipeline_v2
@@ -44,7 +45,17 @@ from md4 import sampling
 from md4 import utils
 from md4.models import utils as model_utils
 
-# import wandb
+import wandb
+
+
+def post_process(texts, vocab):
+    concated = " ".join(texts)
+    generated_words = concated.split()
+    s = 0
+    for word in generated_words:
+        if word in vocab:
+            s += 1
+    return s / len(generated_words)
 
 
 @flax.struct.dataclass
@@ -457,23 +468,23 @@ def apply_split_with_sharding(dataset):
 import tensorflow as tf
 
 
-def create_datasets(config, data_seed):
-    data_train = np.load("data_dir/openwebtext_np_train.npy", allow_pickle=True)
-    data_eval = np.load("data_dir/openwebtext_np_eval.npy", allow_pickle=True)
-    train_ds = tf.data.Dataset.from_tensor_slices({"text": data_train})
-    eval_ds = tf.data.Dataset.from_tensor_slices({"text": data_eval})
-    # per_device_batch_size = config.batch_size // jax.device_count()
-    # batch_dims = [jax.local_device_count(), per_device_batch_size]
-    train_ds = train_ds.shuffle(buffer_size=len(data_train))
-    train_ds = train_ds.repeat(None)  # Repeat infinitely
-    train_ds = train_ds.batch(config.batch_size, drop_remainder=True)
-    eval_ds = eval_ds.batch(config.batch_size, drop_remainder=True)
-    # train_ds = train_ds.batch(batch_dims[-1], drop_remainder=True)
-    # train_ds = train_ds.batch(batch_dims[-2], drop_remainder=True)
-    # train_ds = apply_split_with_sharding(train_ds)
-    train_ds = train_ds.prefetch(tf.data.experimental.AUTOTUNE)
-    eval_ds = eval_ds.prefetch(tf.data.experimental.AUTOTUNE)
-    return train_ds, {"eval": eval_ds}, {"tokenizer": None}
+# def create_datasets(config, data_seed):
+#     data_train = np.load("data_dir/openwebtext_np_train.npy", allow_pickle=True)
+#     data_eval = np.load("data_dir/openwebtext_np_eval.npy", allow_pickle=True)
+#     train_ds = tf.data.Dataset.from_tensor_slices({"text": data_train})
+#     eval_ds = tf.data.Dataset.from_tensor_slices({"text": data_eval})
+#     # per_device_batch_size = config.batch_size // jax.device_count()
+#     # batch_dims = [jax.local_device_count(), per_device_batch_size]
+#     train_ds = train_ds.shuffle(buffer_size=len(data_train))
+#     train_ds = train_ds.repeat(None)  # Repeat infinitely
+#     train_ds = train_ds.batch(config.batch_size, drop_remainder=True)
+#     eval_ds = eval_ds.batch(config.batch_size, drop_remainder=True)
+#     # train_ds = train_ds.batch(batch_dims[-1], drop_remainder=True)
+#     # train_ds = train_ds.batch(batch_dims[-2], drop_remainder=True)
+#     # train_ds = apply_split_with_sharding(train_ds)
+#     train_ds = train_ds.prefetch(tf.data.experimental.AUTOTUNE)
+#     eval_ds = eval_ds.prefetch(tf.data.experimental.AUTOTUNE)
+#     return train_ds, {"eval": eval_ds}, {"tokenizer": None}
 
 
 def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLike):
@@ -484,13 +495,15 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
       workdir: Working directory for checkpoints and TF summaries. If this
         contains checkpoint training will be resumed from the latest checkpoint.
     """
-    # wandb.init(
-    #     entity=config.wandbentity,
-    #     project="maskdiff",
-    #     config=config,
-    #     name=config.wandbname,
-    # )
+    wandb.init(
+        entity=config.wandbentity,
+        project="maskdiff",
+        config=config,
+        name=config.wandbname,
+    )
 
+    with open(config.vocab_dir, "rb") as f:
+        vocab = pickle.load(f)
     workdir = epath.Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -636,7 +649,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 h(step)
 
             if step % config.log_loss_every_steps == 0 or is_last_step:
-                # wandb.log(train_metrics.compute(), step=step)
+                wandb.log(train_metrics.compute(), step=step)
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
 
@@ -659,43 +672,50 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                     eval_metrics_cpu = {
                         split + "_" + k: v for k, v in eval_metrics_cpu.items()
                     }
-                    writer.write_scalars(step, eval_metrics_cpu)
+                    # writer.write_scalars(step, eval_metrics_cpu)
                     # wandb.log(eval_metrics_cpu, step=step)
 
                 # Ignore sample step for now
-                # if hasattr(model, "sample_step"):
-                #     with report_progress.timed("sample"):
-                #         _, sample_rng = jax.random.split(rng)
-                #         dummy_loader = train_loader
-                #         dummy_batch = utils.reshape_batch(next(iter(dummy_loader)))
-                #         dummy_inputs = dummy_batch[config.task_type]
-                #         if "label" in dummy_batch:
-                #             conditioning = dummy_batch["label"].astype("int32")
-                #         else:
-                #             conditioning = None
+                if hasattr(model, "sample_step"):
+                    with report_progress.timed("sample"):
+                        _, sample_rng = jax.random.split(rng)
+                        dummy_loader = train_loader
+                        dummy_batch = utils.reshape_batch(next(iter(dummy_loader)))
+                        dummy_inputs = dummy_batch[config.task_type]
+                        if "label" in dummy_batch:
+                            conditioning = dummy_batch["label"].astype("int32")
+                        else:
+                            conditioning = None
 
-                #         samples = sampling.generate(
-                #             model,
-                #             train_state,
-                #             flax_utils.replicate(sample_rng),
-                #             dummy_inputs,
-                #             conditioning=conditioning,
-                #         )
+                        samples = sampling.generate(
+                            model,
+                            train_state,
+                            flax_utils.replicate(sample_rng),
+                            dummy_inputs,
+                            conditioning=conditioning,
+                        )
 
-                #         all_samples = jax.pmap(
-                #             lambda x: jax.lax.all_gather(x, "batch"), axis_name="batch"
-                #         )(samples)
-                #         all_samples = flax_utils.unreplicate(all_samples)
-                #         all_samples = all_samples.reshape(-1, *data_shape)
-                #         if config.task_type == "image":
-                #             sample_grid = utils.generate_image_grids(all_samples)
-                #             writer.write_images(step, {"samples": sample_grid})
-                #             del all_samples, sample_grid
-                #         elif config.task_type == "text":
-                #             pass
-                #             tokenizer = dataset_info["tokenizer"]
-                #             # texts = utils.detokenize_texts(all_samples, tokenizer)
-                #             # writer.write_texts(step, {"samples": texts})
+                        all_samples = jax.pmap(
+                            lambda x: jax.lax.all_gather(x, "batch"), axis_name="batch"
+                        )(samples)
+                        all_samples = flax_utils.unreplicate(all_samples)
+                        all_samples = all_samples.reshape(-1, *data_shape)
+                        if config.task_type == "image":
+                            raise NotImplementedError()
+                            # sample_grid = utils.generate_image_grids(all_samples)
+                            # writer.write_images(step, {"samples": sample_grid})
+                            # del all_samples, sample_grid
+                        elif config.task_type == "text":
+                            tokenizer = dataset_info["tokenizer"]
+                            texts = utils.detokenize_texts(all_samples, tokenizer)
+                            acc = post_process(texts, vocab)
+                            eval_metrics_cpu["acc"] = acc
+                    
+                writer.write_scalars(step, eval_metrics_cpu)
+                wandb.log(eval_metrics_cpu, step=step)
+                
+                            # texts = utils.detokenize_texts(all_samples, tokenizer)
+                            # writer.write_texts(step, {"samples": texts})
 
             if step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step:
                 with report_progress.timed("checkpoint"):
