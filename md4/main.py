@@ -31,6 +31,13 @@ import tensorflow.compat.v2 as tf
 from md4 import sharded_train
 from md4 import train
 
+# Distributed training
+import jax.distributed
+
+# Parameters should be automatically generated?
+jax.distributed.initialize()
+
+absl.logging.set_verbosity(absl.logging.INFO)
 
 FLAGS = flags.FLAGS
 
@@ -59,8 +66,6 @@ def main(argv):
 
   logging.info("JAX process: %d / %d", jax.process_index(), jax.process_count())
   logging.info("JAX devices: %r", jax.devices())
-
-  print("JAX process: %d / %d", jax.process_index(), jax.process_count())
 
   platform.work_unit().set_task_status(f"process_index: {jax.process_index()}, "
                                        f"process_count: {jax.process_count()}")
