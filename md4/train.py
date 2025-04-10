@@ -94,7 +94,7 @@ def _get_checkpoint_manager(
         options=orbax_checkpoint.CheckpointManagerOptions(
             create=True, keep_period=keep_period,
             enable_async_checkpointing=True,
-            async_options=orbax.checkpoint.AsyncOptions(barrier_sync_fn=None)
+            async_options=orbax_checkpoint.AsyncOptions(barrier_sync_fn=None)
             # single_host_load_and_broadcast=True
         ),
     )
