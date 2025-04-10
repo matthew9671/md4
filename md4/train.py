@@ -88,13 +88,18 @@ def _get_checkpoint_manager(
     keep_period = (
         config.checkpoint_keep_period if config.checkpoint_keep_period > 0 else None
     )
+
+    def _dummy_barrier_sync_fn():
+        """Dummy barrier sync function."""
+        pass
+
     return orbax_checkpoint.CheckpointManager(
         checkpoint_dir,
         checkpointers=checkpointers,
         options=orbax_checkpoint.CheckpointManagerOptions(
             create=True, keep_period=keep_period,
-            enable_async_checkpointing=False,
-            async_options=orbax_checkpoint.AsyncOptions(barrier_sync_fn=None)
+            # enable_async_checkpointing=False,
+            async_options=orbax_checkpoint.AsyncOptions(barrier_sync_fn=_dummy_barrier_sync_fn)
             # single_host_load_and_broadcast=True
         ),
     )
