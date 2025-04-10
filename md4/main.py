@@ -22,6 +22,9 @@ than can be easily tested and imported in Colab.
 from absl import app
 from absl import flags
 from absl import logging
+
+logging.set_verbosity(absl.logging.INFO)
+
 # Required import to setup work units when running through XManager.
 from clu import platform
 import jax
@@ -36,8 +39,6 @@ import jax.distributed
 
 # Parameters should be automatically generated?
 jax.distributed.initialize()
-
-absl.logging.set_verbosity(absl.logging.INFO)
 
 FLAGS = flags.FLAGS
 
