@@ -34,14 +34,16 @@ import tensorflow.compat.v2 as tf
 from md4 import sharded_train
 from md4 import train
 
-# # Distributed training
-# import jax.distributed
+# Distributed training
+import jax.distributed
 
-# # Parameters should be automatically generated?
-# jax.distributed.initialize(
-#   num_processes=jax.process_count(),
-#   process_id=jax.process_index(),
-# )
+import socket
+
+# Parameters should be automatically generated?
+jax.distributed.initialize(
+  num_processes=4,
+  process_id=socket.gethostname(),
+)
 
 FLAGS = flags.FLAGS
 
