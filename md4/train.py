@@ -577,7 +577,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
         contains checkpoint training will be resumed from the latest checkpoint.
     """
     wandb.init(
-        entity=config.wandbentity,
+        # entity=config.wandbentity,
         project="SIC-text8",
         config=config,
         # name=config.wandbname,
