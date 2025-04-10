@@ -99,7 +99,7 @@ def _get_checkpoint_manager(
         options=orbax_checkpoint.CheckpointManagerOptions(
             create=True, keep_period=keep_period,
             enable_async_checkpointing=False,
-            multiprocessing_options=orbax_checkpoint.MultiprocessingOptions(primary_host=0, active_processes={0,})
+            multiprocessing_options=orbax_checkpoint.checkpoint_manager.MultiprocessingOptions(primary_host=0, active_processes={0,})
             # async_options=orbax_checkpoint.AsyncOptions(barrier_sync_fn=_dummy_barrier_sync_fn)
             # single_host_load_and_broadcast=True
         ),
