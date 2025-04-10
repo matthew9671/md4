@@ -576,12 +576,13 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
       workdir: Working directory for checkpoints and TF summaries. If this
         contains checkpoint training will be resumed from the latest checkpoint.
     """
-    wandb.init(
-        # entity=config.wandbentity,
-        project="SIC-text8",
-        config=config,
-        # name=config.wandbname,
-    )
+    if jax.process_index() == 0:
+        wandb.init(
+            # entity=config.wandbentity,
+            project="SIC-text8",
+            config=config,
+            # name=config.wandbname,
+        )
 
     workdir = epath.Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -729,7 +730,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             for h in hooks:
                 h(step)
 
-            if step % config.log_loss_every_steps == 0 or is_last_step:
+            if (step % config.log_loss_every_steps == 0 or is_last_step)
+                and jax.process_index() == 0:
                 wandb.log(train_metrics.compute(), step=step)
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
@@ -753,8 +755,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                     eval_metrics_cpu = {
                         split + "_" + k: v for k, v in eval_metrics_cpu.items()
                     }
-                    writer.write_scalars(step, eval_metrics_cpu)
-                    wandb.log(eval_metrics_cpu, step=step)
+                    if jax.process_index() == 0:
+                        writer.write_scalars(step, eval_metrics_cpu)
+                        wandb.log(eval_metrics_cpu, step=step)
 
                 # Ignore sample step for now
                 # if hasattr(model, "sample_step"):
