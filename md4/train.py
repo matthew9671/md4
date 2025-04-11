@@ -684,7 +684,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     checkpoint_to_restore = ckpt.get_latest_checkpoint_to_restore_from()
     
     if checkpoint_to_restore:
-        checkpointed_state = ckpt.restore_or_initialize(checkpointed_state, checkpoint_to_restore)
+        checkpointed_state = ckpt.restore_or_initialize(checkpointed_state)
 
     # state_restore_dict = ckpt.restore_dict(checkpoint_to_restore)
     # checkpointed_state = restore_partial(checkpointed_state, state_restore_dict)
