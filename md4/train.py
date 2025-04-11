@@ -734,6 +734,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     # Unreplicating from TPU is costly, so we only do it once at the start.
     initial_step = int(flax.jax_utils.unreplicate(train_state.step))
 
+    logging.info("Initial step is %d", initial_step)
+
     with metric_writers.ensure_flushes(writer):
         # Steps are in interval [1, num_train_steps], not [0, num_train_steps - 1].
         for step in range(initial_step + 1, num_train_steps + 1):
