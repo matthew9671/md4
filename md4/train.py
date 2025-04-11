@@ -677,7 +677,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
 
     #     return state
 
-    checkpoint_dir = workdir / "checkpoints"
+    checkpoint_dir = str(workdir / "checkpoints")
     ckpt = checkpoint.MultihostCheckpoint(checkpoint_dir)
     checkpoint_to_restore = ckpt.get_latest_checkpoint_to_restore_from()
     
