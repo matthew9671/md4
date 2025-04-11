@@ -34,17 +34,6 @@ import tensorflow.compat.v2 as tf
 from md4 import sharded_train
 from md4 import train
 
-# Distributed training
-import jax.distributed
-
-import socket
-
-# Parameters should be automatically generated?
-jax.distributed.initialize(
-  num_processes=4,
-  process_id=int(socket.gethostname()[-1]),
-)
-
 FLAGS = flags.FLAGS
 
 config_flags.DEFINE_config_file(
@@ -54,7 +43,6 @@ flags.DEFINE_boolean("sharded", False, "Whether to use sharded training.")
 flags.DEFINE_boolean("sample", False, "Whether to sample given learned model.")
 flags.mark_flags_as_required(["config", "workdir"])
 # Flags --jax_backend_target and --jax_xla_backend are available through JAX.
-
 
 def main(argv):
   del argv

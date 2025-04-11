@@ -89,20 +89,11 @@ def _get_checkpoint_manager(
         config.checkpoint_keep_period if config.checkpoint_keep_period > 0 else None
     )
 
-    def _dummy_barrier_sync_fn():
-        """Dummy barrier sync function."""
-        pass
-
     return orbax_checkpoint.CheckpointManager(
         checkpoint_dir,
         checkpointers=checkpointers,
         options=orbax_checkpoint.CheckpointManagerOptions(
-            create=False, 
-            keep_period=keep_period,
-            enable_async_checkpointing=False,
-            multiprocessing_options=orbax_checkpoint.checkpoint_manager.MultiprocessingOptions(primary_host=0, active_processes={0,})
-            # async_options=orbax_checkpoint.AsyncOptions(barrier_sync_fn=_dummy_barrier_sync_fn)
-            # single_host_load_and_broadcast=True
+            create=True, keep_period=keep_period,
         ),
     )
 
@@ -654,17 +645,48 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
         )
     )
 
-    # Set up checkpointing of the model and the input pipeline.
-    checkpoint_manager = _get_checkpoint_manager(config, workdir)
+    # # Set up checkpointing of the model and the input pipeline.
+    # checkpoint_manager = _get_checkpoint_manager(config, workdir)
 
-    # Retrieve data from previous checkpoints if possible.
+    # # Retrieve data from previous checkpoints if possible.
     checkpointed_state = dict(train_state=train_state, train_iter=train_iter)
-    if checkpoint_manager.latest_step() is not None:
-        logging.info("Found checkpoint!")
-        checkpointed_state = checkpoint_manager.restore(
-            checkpoint_manager.latest_step(), items=checkpointed_state
-        )
-        
+    # if checkpoint_manager.latest_step() is not None:
+    #     logging.info("Found checkpoint!")
+    #     checkpointed_state = checkpoint_manager.restore(
+    #         checkpoint_manager.latest_step(), items=checkpointed_state
+    #     )
+
+    # ckpt_restore_dir = self.config.get('ckpt_restore_dir', 'None')
+    from clu import checkpoint
+
+    # def copy_dict(dict1, dict2):
+    #     if not isinstance(dict1, dict):
+    #         assert not isinstance(dict2, dict)
+    #         return dict2
+    #     for key in dict1.keys():
+    #         if key in dict2:
+    #         dict1[key] = copy_dict(dict1[key], dict2[key])
+
+    #     return dict1
+    
+    # # Only update the parameters in the state_restore_dict
+    # def restore_partial(state, state_restore_dict):
+    #     state_dict = flax.serialization.to_state_dict(state)
+    #     state_dict = copy_dict(state_dict, state_restore_dict)
+    #     state = flax.serialization.from_state_dict(state, state_dict)
+
+    #     return state
+
+    checkpoint_dir = workdir / "checkpoints"
+    ckpt = checkpoint.MultihostCheckpoint(checkpoint_dir)
+    checkpoint_to_restore = ckpt.get_latest_checkpoint_to_restore_from()
+    
+    if checkpoint_to_restore:
+        checkpointed_state = ckpt.restore_or_initialize(checkpointed_state, checkpoint_to_restore)
+
+    # state_restore_dict = ckpt.restore_dict(checkpoint_to_restore)
+    # checkpointed_state = restore_partial(checkpointed_state, state_restore_dict)
+
     train_state = checkpointed_state["train_state"]
     train_iter = checkpointed_state["train_iter"]
 
@@ -803,17 +825,22 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 #             # texts = utils.detokenize_texts(all_samples, tokenizer)
                 #             # writer.write_texts(step, {"samples": texts})
 
-            if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step):
+            if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step) and jax.process_index() == 0:
                 with report_progress.timed("checkpoint"):
                     train_state = merge_batch_stats(train_state)
-                    checkpoint_manager.save(
-                        step,
-                        items=dict(
-                            train_state=jax.tree_util.tree_map(
-                                np.array, flax_utils.unreplicate(train_state)
-                            ),
-                            train_iter=train_iter,
-                        ),
-                    )
+                    checkpointed_state = {
+                        train_state=jax.tree_util.tree_map(np.array, flax_utils.unreplicate(train_state)),
+                        train_iter=train_iter,
+                    }
+                    ckpt.save(step, checkpointed_state)
+                    # checkpoint_manager.save(
+                    #     step,
+                    #     items=dict(
+                    #         train_state=jax.tree_util.tree_map(
+                    #             np.array, flax_utils.unreplicate(train_state)
+                    #         ),
+                    #         train_iter=train_iter,
+                    #     ),
+                    # )
 
     logging.info("Finishing training at step %d", num_train_steps)
