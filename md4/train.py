@@ -99,11 +99,12 @@ def _get_checkpoint_manager(
     keep_period = (
         config.checkpoint_keep_period if config.checkpoint_keep_period > 0 else None
     )
+
     return orbax_checkpoint.CheckpointManager(
         checkpoint_dir,
         checkpointers=checkpointers,
         options=orbax_checkpoint.CheckpointManagerOptions(
-            create=True, keep_period=keep_period
+            create=True, keep_period=keep_period,
         ),
     )
 
@@ -486,6 +487,97 @@ import tensorflow as tf
 #     eval_ds = eval_ds.prefetch(tf.data.experimental.AUTOTUNE)
 #     return train_ds, {"eval": eval_ds}, {"tokenizer": None}
 
+def sample_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLike):
+    """Runs a training and evaluation loop.
+
+    Args:
+      config: Configuration to use.
+      workdir: Working directory for checkpoints and TF summaries. If this
+        contains checkpoint training will be resumed from the latest checkpoint.
+    """
+
+    workdir = epath.Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    rng = utils.get_rng(config.seed)
+    logging.info("Using random seed %s.", rng)
+
+
+    num_train_steps = input_pipeline.get_num_train_steps(config)
+    schedule_fn = functools.partial(
+        get_learning_rate,
+        base_learning_rate=config.learning_rate,
+        num_steps=num_train_steps,
+        warmup_steps=config.warmup_steps,
+        schedule_type=config.learning_rate_schedule,
+    )
+
+    rng, data_seed = jax.random.split(rng)
+    data_seed = int(
+        jax.random.randint(data_seed, [], minval=0, maxval=np.iinfo(np.int32).max)
+    )
+    # The input pipeline runs on each process and loads data for local TPUs.
+    create_datasets = (
+        input_pipeline_v2.create_datasets
+        if config.get("use_v2_input_pipeline", None)
+        else input_pipeline.create_datasets
+    )
+    train_loader, eval_loaders, dataset_info = create_datasets(config, data_seed)
+
+    train_iter = iter(train_loader)
+
+    # Initialize model.
+    rng, model_rng = jax.random.split(rng)
+    data_shape = input_pipeline.get_data_shape(config)
+    per_device_batch_size = config.batch_size // jax.device_count()
+    model, optimizer, train_state, metrics_class = (
+        create_train_state(  # pylint: disable=invalid-name
+            config,
+            model_rng,
+            input_shape=(per_device_batch_size // config.num_microbatches,)
+            + data_shape,
+            schedule_fn=schedule_fn
+        )
+    )
+
+    # Set up checkpointing of the model and the input pipeline.
+    checkpoint_manager = _get_checkpoint_manager(config, workdir)
+
+    # Retrieve data from previous checkpoints if possible.
+    checkpointed_state = dict(train_state=train_state, 
+                            #   train_iter=train_iter
+                              )
+    if checkpoint_manager.latest_step() is not None:
+        logging.info("Found checkpoint!")
+        checkpointed_state = checkpoint_manager.restore(
+            checkpoint_manager.latest_step(), items=checkpointed_state
+        )
+    else:
+        logging.info("No checkpoint found!")
+        return
+        
+    train_state = checkpointed_state["train_state"]
+    train_iter = checkpointed_state["train_iter"]
+
+    dummy_loader = train_loader
+    dummy_batch = utils.reshape_batch(next(iter(dummy_loader)))
+    dummy_inputs = dummy_batch[config.task_type]
+    if "label" in dummy_batch:
+        conditioning = dummy_batch["label"].astype("int32")
+    else:
+        conditioning = None
+
+    # Distribute training.
+    train_state = flax_utils.replicate(train_state)
+    samples = sampling.generate(
+                            model,
+                            train_state,
+                            flax_utils.replicate(rng),
+                            dummy_inputs,
+                            conditioning=conditioning,
+                            )
+    logging.info(samples)
+
 
 def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLike):
     """Runs a training and evaluation loop.
@@ -495,12 +587,13 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
       workdir: Working directory for checkpoints and TF summaries. If this
         contains checkpoint training will be resumed from the latest checkpoint.
     """
-    wandb.init(
-        entity=config.wandbentity,
-        project="maskdiff",
-        config=config,
-        name=config.wandbname,
-    )
+    if jax.process_index() == 0:
+        wandb.init(
+            # entity=config.wandbentity,
+            project="SIC-text8",
+            config=config,
+            # name=config.wandbname,
+        )
 
     with open(config.vocab_dir, "rb") as f:
         vocab = pickle.load(f)
@@ -565,17 +658,58 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
         )
     )
 
-    # Set up checkpointing of the model and the input pipeline.
-    checkpoint_manager = _get_checkpoint_manager(config, workdir)
+    # # Set up checkpointing of the model and the input pipeline.
+    # checkpoint_manager = _get_checkpoint_manager(config, workdir)
 
-    # Retrieve data from previous checkpoints if possible.
-    checkpointed_state = dict(train_state=train_state, train_iter=train_iter)
-    if checkpoint_manager.latest_step() is not None:
-        checkpointed_state = checkpoint_manager.restore(
-            checkpoint_manager.latest_step(), items=checkpointed_state
-        )
+    # # Retrieve data from previous checkpoints if possible.
+    checkpointed_state = dict(train_state=train_state, 
+        step=0
+        # train_iter=train_iter
+    )
+    # if checkpoint_manager.latest_step() is not None:
+    #     logging.info("Found checkpoint!")
+    #     checkpointed_state = checkpoint_manager.restore(
+    #         checkpoint_manager.latest_step(), items=checkpointed_state
+    #     )
+
+    # ckpt_restore_dir = self.config.get('ckpt_restore_dir', 'None')
+    from clu import checkpoint
+
+    # def copy_dict(dict1, dict2):
+    #     if not isinstance(dict1, dict):
+    #         assert not isinstance(dict2, dict)
+    #         return dict2
+    #     for key in dict1.keys():
+    #         if key in dict2:
+    #         dict1[key] = copy_dict(dict1[key], dict2[key])
+
+    #     return dict1
+    
+    # # Only update the parameters in the state_restore_dict
+    # def restore_partial(state, state_restore_dict):
+    #     state_dict = flax.serialization.to_state_dict(state)
+    #     state_dict = copy_dict(state_dict, state_restore_dict)
+    #     state = flax.serialization.from_state_dict(state, state_dict)
+
+    #     return state
+
+    checkpoint_dir = str(workdir / "checkpoints")
+    # The vdm code initalizes two checkpoints, one for loading and one for saving
+    # which I don't understand
+    # ckpt = checkpoint.MultihostCheckpoint(checkpoint_dir)
+    ckpt = checkpoint.Checkpoint(checkpoint_dir, max_to_keep=10)
+    checkpoint_to_restore = ckpt.get_latest_checkpoint_to_restore_from()
+    
+    if checkpoint_to_restore:
+        checkpointed_state = ckpt.restore_or_initialize(checkpointed_state)
+
+    # state_restore_dict = ckpt.restore_dict(checkpoint_to_restore)
+    # checkpointed_state = restore_partial(checkpointed_state, state_restore_dict)
+
     train_state = checkpointed_state["train_state"]
-    train_iter = checkpointed_state["train_iter"]
+    
+    # We can't do flax serialization so long as we're using grain for the data loader
+    # train_iter = checkpointed_state["train_iter"]
 
     # Distribute training.
     train_state = flax_utils.replicate(train_state)
@@ -615,7 +749,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     train_metrics = None
 
     # Unreplicating from TPU is costly, so we only do it once at the start.
-    initial_step = int(flax.jax_utils.unreplicate(train_state.step))
+    # initial_step = int(flax.jax_utils.unreplicate(train_state.step))
+    initial_step = checkpointed_state["step"]
+    logging.info("Initial step is %d", initial_step)
 
     with metric_writers.ensure_flushes(writer):
         # Steps are in interval [1, num_train_steps], not [0, num_train_steps - 1].
@@ -648,7 +784,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             for h in hooks:
                 h(step)
 
-            if step % config.log_loss_every_steps == 0 or is_last_step:
+            if ((step % config.log_loss_every_steps == 0 or is_last_step)
+                and jax.process_index() == 0):
                 wandb.log(train_metrics.compute(), step=step)
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
@@ -672,8 +809,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                     eval_metrics_cpu = {
                         split + "_" + k: v for k, v in eval_metrics_cpu.items()
                     }
-                    # writer.write_scalars(step, eval_metrics_cpu)
-                    # wandb.log(eval_metrics_cpu, step=step)
+                    if jax.process_index() == 0:
+                        writer.write_scalars(step, eval_metrics_cpu)
+                        wandb.log(eval_metrics_cpu, step=step)
 
                 # Ignore sample step for now
                 if hasattr(model, "sample_step"):
@@ -717,17 +855,24 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                             # texts = utils.detokenize_texts(all_samples, tokenizer)
                             # writer.write_texts(step, {"samples": texts})
 
-            if step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step:
+            if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step) and jax.process_index() == 0:
                 with report_progress.timed("checkpoint"):
+                    # I don't know if it is necessary to unreplicate the train state
                     train_state = merge_batch_stats(train_state)
-                    checkpoint_manager.save(
-                        step,
-                        items=dict(
-                            train_state=jax.tree_util.tree_map(
-                                np.array, flax_utils.unreplicate(train_state)
-                            ),
-                            train_iter=train_iter,
-                        ),
+                    checkpointed_state = dict(
+                        train_state=jax.tree_util.tree_map(np.array, flax_utils.unreplicate(train_state)),
+                        step=step,
+                        # train_iter=train_iter,
                     )
+                    ckpt.save(checkpointed_state)
+                    # checkpoint_manager.save(
+                    #     step,
+                    #     items=dict(
+                    #         train_state=jax.tree_util.tree_map(
+                    #             np.array, flax_utils.unreplicate(train_state)
+                    #         ),
+                    #         train_iter=train_iter,
+                    #     ),
+                    # )
 
     logging.info("Finishing training at step %d", num_train_steps)

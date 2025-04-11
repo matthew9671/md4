@@ -22,6 +22,9 @@ than can be easily tested and imported in Colab.
 from absl import app
 from absl import flags
 from absl import logging
+
+logging.set_verbosity(logging.INFO)
+
 # Required import to setup work units when running through XManager.
 from clu import platform
 import jax
@@ -31,16 +34,15 @@ import tensorflow.compat.v2 as tf
 from md4 import sharded_train
 from md4 import train
 
-
 FLAGS = flags.FLAGS
 
 config_flags.DEFINE_config_file(
     "config", None, "Training configuration.", lock_config=True)
 flags.DEFINE_string("workdir", None, "Work unit directory.")
 flags.DEFINE_boolean("sharded", False, "Whether to use sharded training.")
+flags.DEFINE_boolean("sample", False, "Whether to sample given learned model.")
 flags.mark_flags_as_required(["config", "workdir"])
 # Flags --jax_backend_target and --jax_xla_backend are available through JAX.
-
 
 def main(argv):
   del argv
@@ -64,10 +66,13 @@ def main(argv):
   platform.work_unit().create_artifact(platform.ArtifactType.DIRECTORY,
                                        FLAGS.workdir, "workdir")
 
-  if FLAGS.sharded:
-    sharded_train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
+  if FLAGS.sample:
+    train.sample_and_evaluate(FLAGS.config, FLAGS.workdir)
   else:
-    train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
+    if FLAGS.sharded:
+      sharded_train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
+    else:
+      train.train_and_evaluate(FLAGS.config, FLAGS.workdir)
 
 
 if __name__ == "__main__":
