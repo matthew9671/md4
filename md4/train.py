@@ -592,6 +592,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             # entity=config.wandbentity,
             project="SIC-text8",
             config=config,
+            id="a650ovoh",
+            resume="must",
             # name=config.wandbname,
         )
 
@@ -849,8 +851,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                             acc = post_process(texts, vocab)
                             eval_metrics_cpu["acc"] = acc
                     
-                writer.write_scalars(step, eval_metrics_cpu)
-                wandb.log(eval_metrics_cpu, step=step)
+                if jax.process_index() == 0:
+                    writer.write_scalars(step, eval_metrics_cpu)
+                    wandb.log(eval_metrics_cpu, step=step)
                 
                             # texts = utils.detokenize_texts(all_samples, tokenizer)
                             # writer.write_texts(step, {"samples": texts})
