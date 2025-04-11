@@ -837,7 +837,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step) and jax.process_index() == 0:
                 with report_progress.timed("checkpoint"):
                     # I don't know if it is necessary to unreplicate the train state
-                    train_state = flax.jax_utils.unreplicate(merge_batch_stats(train_state))
+                    train_state = merge_batch_stats(train_state)
                     checkpointed_state = dict(
                         train_state=jax.tree_util.tree_map(np.array, flax_utils.unreplicate(train_state)),
                         step=step,
