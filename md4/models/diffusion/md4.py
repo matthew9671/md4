@@ -239,6 +239,45 @@ class MD4(nn.Module):
     # loss_diff: [bs]
     return loss_diff
 
+  # The loss for training simple informed correctors
+  def sic_diffusion_loss(self, t, x, rng, cond=None, train=False):
+    if not self.cont_time:
+      # discretize time steps
+      t = (jnp.floor(t * self.timesteps) + 1) / self.timesteps
+
+    # sample z_t
+    xt = self.forward_sample(x, t)
+    logits, _ = self.predict_x(xt, t, cond=cond, train=train)
+    log_p = jax.nn.log_softmax(logits, axis=-1)
+    one_hot_x = jax.nn.one_hot(x, self.vocab_size)
+    neg_cross_ent = one_hot_x * log_p
+    neg_cross_ent = jnp.where(one_hot_x, neg_cross_ent, 0.0)
+    neg_cross_ent = jnp.sum(neg_cross_ent, axis=-1)
+    mask = (xt == self.vocab_size).astype('float32')
+
+    remaining_axis = list(range(x.ndim)[1:])
+    # masked_neg_cross_ent: [bs]
+    masked_neg_cross_ent = jnp.sum(mask * neg_cross_ent, remaining_axis)
+
+    # Additional loss for SIC
+    # Sample zs by running 1 ancestral step
+
+    if not self.cont_time:
+      # loss for finite depth T, i.e. discrete time
+      s = t - (1.0 / self.timesteps)
+      gt = self.noise_schedule(t)
+      gs = self.noise_schedule(s)
+      loss_diff = (
+          self.timesteps
+          * jnp.expm1(gt - gs)
+          * self.noise_schedule.alpha(s)
+          * masked_neg_cross_ent
+      )
+    else:
+      assert False, 'Not implemented for continuous time'
+    # loss_diff: [bs]
+    return loss_diff
+
   @nn.compact
   def __call__(self, x, cond=None, train=False):
     bs = x.shape[0]
