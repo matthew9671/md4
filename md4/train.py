@@ -649,7 +649,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     # checkpoint_manager = _get_checkpoint_manager(config, workdir)
 
     # # Retrieve data from previous checkpoints if possible.
-    checkpointed_state = dict(train_state=train_state, train_iter=train_iter)
+    checkpointed_state = dict(train_state=train_state, 
+        # train_iter=train_iter
+    )
     # if checkpoint_manager.latest_step() is not None:
     #     logging.info("Found checkpoint!")
     #     checkpointed_state = checkpoint_manager.restore(
@@ -688,7 +690,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     # checkpointed_state = restore_partial(checkpointed_state, state_restore_dict)
 
     train_state = checkpointed_state["train_state"]
-    train_iter = checkpointed_state["train_iter"]
+    
+    # We can't do flax serialization so long as we're using grain for the data loader
+    # train_iter = checkpointed_state["train_iter"]
 
     # Distribute training.
     train_state = flax_utils.replicate(train_state)
@@ -830,7 +834,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                     train_state = merge_batch_stats(train_state)
                     checkpointed_state = dict(
                         train_state=jax.tree_util.tree_map(np.array, flax_utils.unreplicate(train_state)),
-                        train_iter=train_iter,
+                        # train_iter=train_iter,
                     )
                     ckpt.save(checkpointed_state)
                     # checkpoint_manager.save(
