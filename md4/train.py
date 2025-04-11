@@ -832,7 +832,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                         train_state=jax.tree_util.tree_map(np.array, flax_utils.unreplicate(train_state)),
                         train_iter=train_iter,
                     )
-                    ckpt.save(step, checkpointed_state)
+                    ckpt.save(checkpointed_state)
                     # checkpoint_manager.save(
                     #     step,
                     #     items=dict(
