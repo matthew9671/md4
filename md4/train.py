@@ -650,6 +650,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
 
     # # Retrieve data from previous checkpoints if possible.
     checkpointed_state = dict(train_state=train_state, 
+        step=0
         # train_iter=train_iter
     )
     # if checkpoint_manager.latest_step() is not None:
@@ -734,8 +735,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     train_metrics = None
 
     # Unreplicating from TPU is costly, so we only do it once at the start.
-    initial_step = int(flax.jax_utils.unreplicate(train_state.step))
-
+    # initial_step = int(flax.jax_utils.unreplicate(train_state.step))
+    initial_step = checkpointed_state["step"]
     logging.info("Initial step is %d", initial_step)
 
     with metric_writers.ensure_flushes(writer):
@@ -837,9 +838,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 with report_progress.timed("checkpoint"):
                     # I don't know if it is necessary to unreplicate the train state
                     train_state = flax.jax_utils.unreplicate(merge_batch_stats(train_state))
-                    train_state.step = step
                     checkpointed_state = dict(
                         train_state=jax.tree_util.tree_map(np.array, flax_utils.unreplicate(train_state)),
+                        step=step,
                         # train_iter=train_iter,
                     )
                     ckpt.save(checkpointed_state)
