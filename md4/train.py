@@ -828,10 +828,10 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step) and jax.process_index() == 0:
                 with report_progress.timed("checkpoint"):
                     train_state = merge_batch_stats(train_state)
-                    checkpointed_state = {
+                    checkpointed_state = dict(
                         train_state=jax.tree_util.tree_map(np.array, flax_utils.unreplicate(train_state)),
                         train_iter=train_iter,
-                    }
+                    )
                     ckpt.save(step, checkpointed_state)
                     # checkpoint_manager.save(
                     #     step,
