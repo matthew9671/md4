@@ -683,7 +683,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     checkpoint_dir = str(workdir / "checkpoints")
     # The vdm code initalizes two checkpoints, one for loading and one for saving
     # which I don't understand
-    ckpt = checkpoint.MultihostCheckpoint(checkpoint_dir)
+    # ckpt = checkpoint.MultihostCheckpoint(checkpoint_dir)
+    ckpt = checkpoint.Checkpoint(checkpoint_dir)
     checkpoint_to_restore = ckpt.get_latest_checkpoint_to_restore_from()
     
     if checkpoint_to_restore:
