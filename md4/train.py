@@ -680,6 +680,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
     #     return state
 
     checkpoint_dir = str(workdir / "checkpoints")
+    # The vdm code initalizes two checkpoints, one for loading and one for saving
+    # which I don't understand
     ckpt = checkpoint.MultihostCheckpoint(checkpoint_dir)
     checkpoint_to_restore = ckpt.get_latest_checkpoint_to_restore_from()
     
@@ -833,7 +835,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
 
             if (step == 1 or step % config.checkpoint_every_steps == 0 or is_last_step) and jax.process_index() == 0:
                 with report_progress.timed("checkpoint"):
-                    train_state = merge_batch_stats(train_state)
+                    # I don't know if it is necessary to unreplicate the train state
+                    train_state = flax.jax_utils.unreplicate(merge_batch_stats(train_state))
+                    train_state.step = step
                     checkpointed_state = dict(
                         train_state=jax.tree_util.tree_map(np.array, flax_utils.unreplicate(train_state)),
                         # train_iter=train_iter,
