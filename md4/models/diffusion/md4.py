@@ -245,6 +245,9 @@ class MD4(nn.Module):
       # discretize time steps
       t = (jnp.floor(t * self.timesteps) + 1) / self.timesteps
 
+    # The weight balacing the mask term and non-mask term
+    wt = .5
+
     # sample z_t
     xt = self.forward_sample(x, t)
     logits, _ = self.predict_x(xt, t, cond=cond, train=train)
@@ -260,23 +263,56 @@ class MD4(nn.Module):
     masked_neg_cross_ent = jnp.sum(mask * neg_cross_ent, remaining_axis)
 
     # Additional loss for SIC
-    # Sample zs by running 1 ancestral step
+    # Sample xs_tilde by running 1 ancestral step
+    # This is copied from ancestral_sample_step
+    s = t - (1.0 / self.timesteps)
+    s = jnp.clip(s, 0.0, 1.0) # Edge case s < 0.0
+    alpha_t = self.noise_schedule.alpha(t)
+    alpha_s = self.noise_schedule.alpha(s)
+
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
+    probs_vocab = unmask_prob * mean_preds
+
+    probs_mask = jnp.ones(list(xt.shape) + [1]) * (1 - unmask_prob)
+    probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
+
+    to_unmask = tfd.Categorical(probs=probs).sample(seed=rng)
+    is_mask = xt == self.vocab_size
+    xs_tilde = jnp.where(is_mask, to_unmask, xt)
+    # Don't take gradient w.r.t. xs_tilde
+    xs_tilde = jax.lax.stop_gradient(xs_tilde)
+
+    # Pass the sampled xs_tilde through the model
+    logits_xs_tilde, _ = self.predict_x(xs_tilde, s, cond=cond, train=train)
+    log_p_xs_tilde = jax.nn.log_softmax(logits_xs_tilde, axis=-1)
+
+    # Compute the cross entropy on the non-mask dimensions
+    neg_cross_ent = one_hot_x * log_p_xs_tilde
+    neg_cross_ent = jnp.where(one_hot_x, neg_cross_ent, 0.0)
+    neg_cross_ent = jnp.sum(neg_cross_ent, axis=-1)
+    mask = (xs_tilde == self.vocab_size).astype('float32')
+
+    remaining_axis = list(range(x.ndim)[1:])
+    # masked_neg_cross_ent: [bs]
+    non_mask_neg_cross_ent = jnp.sum((1 - mask) * neg_cross_ent, remaining_axis)    
 
     if not self.cont_time:
       # loss for finite depth T, i.e. discrete time
-      s = t - (1.0 / self.timesteps)
       gt = self.noise_schedule(t)
       gs = self.noise_schedule(s)
-      loss_diff = (
-          self.timesteps
-          * jnp.expm1(gt - gs)
-          * self.noise_schedule.alpha(s)
-          * masked_neg_cross_ent
+      loss_mask = (
+        jnp.expm1(gt - gs)
+        * self.noise_schedule.alpha(s)
+        * masked_neg_cross_ent
       )
+      loss_non_mask = non_mask_neg_cross_ent
+      loss_diff = self.timesteps * (wt * loss_mask + (1 - wt) * loss_non_mask)
     else:
       assert False, 'Not implemented for continuous time'
     # loss_diff: [bs]
-    return loss_diff
+    return loss_diff, loss_mask, loss_non_mask
 
   @nn.compact
   def __call__(self, x, cond=None, train=False):
@@ -293,13 +329,21 @@ class MD4(nn.Module):
     # 3. DIFFUSION LOSS: [bs]
     # sample time steps
     rng1 = self.make_rng('sample')
+    rng1, rng2 = jax.random.split(rng1)
+
     if self.antithetic_time_sampling:
       t0 = jax.random.uniform(rng1)
       t = jnp.mod(t0 + jnp.arange(0.0, 1.0, step=1.0 / bs), 1.0)
     else:
       t = jax.random.uniform(rng1, shape=[bs])
 
-    loss_diff = self.diffusion_loss(t, x, cond=cond, train=train).mean()
+    # loss_diff = self.diffusion_loss(t, x, cond=cond, train=train).mean()
+    loss_diff, loss_mask, loss_non_mask = self.sic_diffusion_loss(
+        t, x, rng2, cond=cond, train=train)
+    loss_diff = jnp.mean(loss_diff)
+    loss_mask = jnp.mean(loss_mask)
+    loss_non_mask = jnp.mean(loss_non_mask)
+
     loss = loss_diff + loss_prior + loss_recon
 
     model_stats = {
@@ -307,6 +351,8 @@ class MD4(nn.Module):
         'loss_diff': loss_diff,
         'loss_prior': loss_prior,
         'loss_recon': loss_recon,
+        'loss_mask': loss_mask,
+        'loss_non_mask': loss_non_mask,
     }
     model_stats = utils.loss2bpt(model_stats, self.data_shape)
     return model_stats

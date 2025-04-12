@@ -592,8 +592,8 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
             # entity=config.wandbentity,
             project="SIC-text8",
             config=config,
-            id="a650ovoh",
-            resume="must",
+            # id="a650ovoh",
+            # resume="must",
             # name=config.wandbname,
         )
 
