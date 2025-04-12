@@ -99,11 +99,19 @@ class MD4(nn.Module):
   # time_features: t or none
   time_features: str = 't'
   classes: int = 10 + 1  # image classes
-  sampler: str = 'analytic'
+  sampler: str = 'informed'
   # uniform, cosine
   sampling_grid: str = 'cosine'
   topp: float = 0.98
   model_sharding: bool = False
+
+  # Informed correctors
+  k: int = 1
+  gibbs_temp: float = 1.0
+  # Uninformed correctors
+  uninformed_step_size: float = 0.5
+  # MaskGIT
+  maskgit_temp: float = 1.0
 
   def setup(self):
     self.noise_schedule = MaskingSchedule(
@@ -387,6 +395,59 @@ class MD4(nn.Module):
     zs = jnp.where(is_mask, to_unmask, zt)
     return zs
 
+  def ancestral_sample_step_informed(self, rng, i, timesteps, zt, conditioning=None):
+
+    B, D = zt.shape[:2]
+
+    rng_body = jax.random.fold_in(rng, i)
+    s, t = self.get_sampling_grid(i, timesteps)
+    cond = self.get_cond_embedding(conditioning)
+
+    alpha_t = self.noise_schedule.alpha(t)
+    alpha_s = self.noise_schedule.alpha(s)
+
+    rng_pstep, rng_cstep = jr.split(rng_body, 2)
+
+    # Predictor (ancestral)
+    logits, _ = self.predict_x(zt, t, cond=cond)
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
+    probs_vocab = unmask_prob * mean_preds
+
+    probs_mask = jnp.ones(list(zt.shape) + [1]) * (1 - unmask_prob)
+    probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
+
+    to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_pstep)
+    is_mask = zt == self.vocab_size
+    zs = jnp.where(is_mask, to_unmask, zt)
+
+    if self.k == 0:
+        return zs
+
+    # Corrector (gibbs)
+    rng_cstep_1, rng_cstep_2 = jr.split(rng_cstep, 2)
+    logits, _ = self.predict_x(zs, s, cond=cond)
+    logits -= logsumexp(logits, axis=-1, keepdims=True)
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    jump_target = tfd.Categorical(probs=mean_preds).sample(seed=rng_cstep_1)
+    # Figure out locations with the lowest score
+    # Since the score is proportional to the denoising prob anyways, we're just gonna use the logits again
+    b_idx, d_idx = jnp.indices((B, D))
+    scores = logits[b_idx, d_idx, zs]
+    # Add temperature annealing
+    # This is minus since conventionally we add noise and take max
+    scores -= self.gibbs_temp * jr.gumbel(rng_cstep_2, shape=(B, D))
+    is_mask = zs == self.vocab_size
+    scores = jnp.where(is_mask, jnp.inf, scores)
+    
+    # Trick: sort and then find the kth smallest
+    thres = jnp.sort(scores, axis=-1)[:, self.k-1:self.k]
+    zs = jnp.where((scores <= thres) & (zs != self.vocab_size), jump_target, zs)
+
+    return zs
+
   def topp_sample_step(
       self, rng, i, timesteps, zt, conditioning=None, topp=0.98
   ):
@@ -441,6 +502,10 @@ class MD4(nn.Module):
   def sample_step(self, rng, i, timesteps, zt, conditioning=None, topp=None):
     if self.sampler == 'ancestral':
       return self.ancestral_sample_step(
+          rng, i, timesteps, zt, conditioning=conditioning
+      )
+    elif self.sampler == "informed":
+      return self.ancestral_sample_step_informed(
           rng, i, timesteps, zt, conditioning=conditioning
       )
     elif self.sampler == 'topp':
