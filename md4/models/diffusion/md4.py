@@ -314,13 +314,13 @@ class MD4(nn.Module):
       # loss for finite depth T, i.e. discrete time
       gt = self.noise_schedule(t)
       gs = self.noise_schedule(s)
-      loss_mask = (
+      loss_mask = self.timesteps * (
         jnp.expm1(gt - gs)
         * self.noise_schedule.alpha(s)
         * masked_neg_cross_ent
       )
-      loss_non_mask = non_mask_neg_cross_ent
-      loss_diff = self.timesteps * (wt * loss_mask + (1 - wt) * loss_non_mask)
+      loss_non_mask = - self.timesteps * non_mask_neg_cross_ent
+      loss_diff = (wt * loss_mask + (1 - wt) * loss_non_mask)
     else:
       assert False, 'Not implemented for continuous time'
     # loss_diff: [bs]
