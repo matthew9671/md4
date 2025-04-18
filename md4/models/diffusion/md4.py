@@ -249,6 +249,8 @@ class MD4(nn.Module):
 
   # The loss for training simple informed correctors
   def sic_diffusion_loss(self, t, x, rng, cond=None, train=False):
+    # t shape: [bs]
+
     if not self.cont_time:
       # discretize time steps
       t = (jnp.floor(t * self.timesteps) + 1) / self.timesteps
@@ -280,6 +282,7 @@ class MD4(nn.Module):
 
     mean_preds = jax.nn.softmax(logits, axis=-1)
 
+    # TODO: fix the boardcasting issue here
     unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
     probs_vocab = unmask_prob * mean_preds
 
