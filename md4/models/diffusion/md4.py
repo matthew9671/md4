@@ -282,8 +282,9 @@ class MD4(nn.Module):
 
     mean_preds = jax.nn.softmax(logits, axis=-1)
 
-    # TODO: fix the boardcasting issue here
     unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
+    # We need to boardcast here, but somehow in sampling boardcasting is not needed
+    unmask_prob = unmask_prob[..., None, None]
     probs_vocab = unmask_prob * mean_preds
 
     probs_mask = jnp.ones(list(xt.shape) + [1]) * (1 - unmask_prob)
