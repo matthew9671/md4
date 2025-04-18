@@ -41,7 +41,10 @@ def get_config() -> config_dict.ConfigDict:
     config.outside_embed = True
     # t or none (removes time dependence)
     config.time_features = "t"
-    config.cont_time = True
+
+    # Use discrete time for the first version of SIC loss
+    # config.cont_time = True
+    config.cont_time = False
 
     config.feature_dim = 64
     config.n_layers = 12
