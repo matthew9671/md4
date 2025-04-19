@@ -256,7 +256,8 @@ class MD4(nn.Module):
       t = (jnp.floor(t * self.timesteps) + 1) / self.timesteps
 
     # The weight balacing the mask term and non-mask term
-    wt = .5
+    # wt = .5
+    wt = t
 
     # sample z_t
     xt = self.forward_sample(x, t)
