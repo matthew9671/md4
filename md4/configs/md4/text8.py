@@ -35,7 +35,7 @@ def get_config() -> config_dict.ConfigDict:
     config.data_shape = (256,)
 
     # timesteps: int or None
-    config.timesteps = 1000
+    config.timesteps = 32
     # linear, cosine, poly[exponent], e.g., poly3
     config.noise_schedule = "linear"
     config.outside_embed = True

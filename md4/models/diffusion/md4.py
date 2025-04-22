@@ -106,7 +106,7 @@ class MD4(nn.Module):
   model_sharding: bool = False
 
   # Informed correctors
-  k: int = 1
+  k: int = 4
   gibbs_temp: float = 1.0
   # Uninformed correctors
   uninformed_step_size: float = 0.5
@@ -276,7 +276,9 @@ class MD4(nn.Module):
     # Additional loss for SIC
     # Sample xs_tilde by running 1 ancestral step
     # This is copied from ancestral_sample_step
-    s = t - (1.0 / self.timesteps)
+    # Timesteps is the number of sampling steps for predictor-only
+    # For predictor-corrector, we need to divide by 2
+    s = t - 1.0 / ((self.timesteps) // 2)
     s = jnp.clip(s, 0.0, 1.0) # Edge case s < 0.0
     alpha_t = self.noise_schedule.alpha(t)
     alpha_s = self.noise_schedule.alpha(s)
