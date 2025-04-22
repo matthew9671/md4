@@ -256,8 +256,8 @@ class MD4(nn.Module):
       t = (jnp.floor(t * self.timesteps) + 1) / self.timesteps
 
     # The weight balacing the mask term and non-mask term
-    # wt = .5
-    wt = t
+    wt = .5
+    # wt = t
 
     # sample z_t
     xt = self.forward_sample(x, t)
@@ -292,8 +292,8 @@ class MD4(nn.Module):
     probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
 
     to_unmask = tfd.Categorical(probs=probs).sample(seed=rng)
-    is_mask = xt == self.vocab_size
-    xs_tilde = jnp.where(is_mask, to_unmask, xt)
+    is_mask_xt = xt == self.vocab_size
+    xs_tilde = jnp.where(is_mask_xt, to_unmask, xt)
     # Don't take gradient w.r.t. xs_tilde
     xs_tilde = jax.lax.stop_gradient(xs_tilde)
 
@@ -305,11 +305,19 @@ class MD4(nn.Module):
     neg_cross_ent = one_hot_x * log_p_xs_tilde
     neg_cross_ent = jnp.where(one_hot_x, neg_cross_ent, 0.0)
     neg_cross_ent = jnp.sum(neg_cross_ent, axis=-1)
-    mask = (xs_tilde == self.vocab_size).astype('float32')
+    is_mask_xs = (xs_tilde == self.vocab_size).astype('float32')
 
     remaining_axis = list(range(x.ndim)[1:])
     # masked_neg_cross_ent: [bs]
-    non_mask_neg_cross_ent = jnp.sum((1 - mask) * neg_cross_ent, remaining_axis)    
+    # We actually want to only consider the dimensions that are generated in this step
+    # because in theory we want to compute p(x_s|x_s_tilde, x_t)
+    # and all the tokens in x_t are already known
+    # non_mask_neg_cross_ent = jnp.sum((1 - is_mask_xs) * neg_cross_ent, remaining_axis)
+    non_mask_neg_cross_ent = jnp.sum((1 - is_mask_xs) * is_mask_xt * neg_cross_ent, remaining_axis)    
+
+    # Also note here that we are not sampling xs and forcing xs_tilde to have the same masks
+    # this is because the ancestral sampling must product the correct distribution on the mask configuration 
+    # and sampling the mask configuration is independent from sampling the tokens
 
     if not self.cont_time:
       # loss for finite depth T, i.e. discrete time
