@@ -292,7 +292,7 @@ class MD4(nn.Module):
     mean_preds = jax.nn.softmax(logits, axis=-1)
 
     if self.loss_type == 'sic_zero':
-      unmask_prob = 1 # We're unmasking everything
+      unmask_prob = jnp.ones_like(alpha_t) # We're unmasking everything
     else:
       unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
 
