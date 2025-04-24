@@ -827,6 +827,7 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                         else:
                             conditioning = None
 
+                        model.sampler = "ancestral"
                         samples = sampling.generate(
                             model,
                             train_state,
@@ -834,12 +835,28 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                             dummy_inputs,
                             conditioning=conditioning,
                         )
-
                         all_samples = jax.pmap(
                             lambda x: jax.lax.all_gather(x, "batch"), axis_name="batch"
                         )(samples)
                         all_samples = flax_utils.unreplicate(all_samples)
                         all_samples = all_samples.reshape(-1, *data_shape)
+
+                        if model.loss_type != "md4":
+                            # Do additional evaluations
+                            model.sampler = "informed"
+                            samples = sampling.generate(
+                                model,
+                                train_state,
+                                flax_utils.replicate(sample_rng),
+                                dummy_inputs,
+                                conditioning=conditioning,
+                            )
+                            all_samples_informed = jax.pmap(
+                                lambda x: jax.lax.all_gather(x, "batch"), axis_name="batch"
+                            )(samples)
+                            all_samples_informed = flax_utils.unreplicate(all_samples_informed)
+                            all_samples_informed = all_samples_informed.reshape(-1, *data_shape)
+
                         if config.task_type == "image":
                             raise NotImplementedError()
                             # sample_grid = utils.generate_image_grids(all_samples)
@@ -850,6 +867,14 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                             texts = utils.detokenize_texts(all_samples, tokenizer)
                             acc = post_process(texts, vocab)
                             eval_metrics_cpu["acc"] = acc
+
+                            if model.loss_type != "md4":
+                                texts_informed = utils.detokenize_texts(
+                                    all_samples_informed, tokenizer
+                                )
+                                acc_informed = post_process(texts_informed, vocab)
+                                eval_metrics_cpu["acc_informed"] = acc_informed
+
                     
                 if jax.process_index() == 0:
                     writer.write_scalars(step, eval_metrics_cpu)

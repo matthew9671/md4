@@ -115,6 +115,9 @@ class MD4(nn.Module):
   # MaskGIT
   maskgit_temp: float = 1.0
 
+  # SIC stuff
+  loss_type: str = 'sic_zero' # sic_zero, sic, md4
+
   def setup(self):
     self.noise_schedule = MaskingSchedule(
         self.data_shape, self.noise_schedule_type
@@ -280,14 +283,19 @@ class MD4(nn.Module):
     # This is copied from ancestral_sample_step
     # Timesteps is the number of sampling steps for predictor-only
     # For predictor-corrector, we need to divide by 2
-    s = t - 1.0 / ((self.timesteps) // 2)
+    timesteps = self.timesteps
+    s = t - 1.0 / timesteps
     s = jnp.clip(s, 0.0, 1.0) # Edge case s < 0.0
     alpha_t = self.noise_schedule.alpha(t)
     alpha_s = self.noise_schedule.alpha(s)
 
     mean_preds = jax.nn.softmax(logits, axis=-1)
 
-    unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
+    if self.loss_type == 'sic_zero':
+      unmask_prob = 1 # We're unmasking everything
+    else:
+      unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
+
     # We need to boardcast here, but somehow in sampling boardcasting is not needed
     unmask_prob = unmask_prob[..., None, None]
     probs_vocab = unmask_prob * mean_preds
@@ -317,7 +325,17 @@ class MD4(nn.Module):
     # because in theory we want to compute p(x_s|x_s_tilde, x_t)
     # and all the tokens in x_t are already known
     # non_mask_neg_cross_ent = jnp.sum((1 - is_mask_xs) * neg_cross_ent, remaining_axis)
-    non_mask_neg_cross_ent = jnp.sum((1 - is_mask_xs) * is_mask_xt * neg_cross_ent, remaining_axis)    
+
+    if self.loss_type == 'sic_zero':
+      # We will sum over all the dimensions unknown to x_t
+      # Since we sumed over more dimensions, we need to scale down this term by the same factor as
+      # in the MD4 loss
+      gt = self.noise_schedule(t)
+      gs = self.noise_schedule(s)
+      coeff = jnp.expm1(gt - gs) * alpha_s
+      non_mask_neg_cross_ent = coeff * jnp.sum(is_mask_xt * neg_cross_ent, remaining_axis)
+    else:
+      non_mask_neg_cross_ent = jnp.sum((1 - is_mask_xs) * is_mask_xt * neg_cross_ent, remaining_axis)    
 
     # Also note here that we are not sampling xs and forcing xs_tilde to have the same masks
     # this is because the ancestral sampling must product the correct distribution on the mask configuration 
@@ -327,13 +345,12 @@ class MD4(nn.Module):
       # loss for finite depth T, i.e. discrete time
       gt = self.noise_schedule(t)
       gs = self.noise_schedule(s)
-      loss_mask = self.timesteps * (
+      loss_mask = timesteps * (
         jnp.expm1(gt - gs)
         * self.noise_schedule.alpha(s)
         * masked_neg_cross_ent
       )
-      # TODO: this is probably wrong...! number of timesteps should be halved!
-      loss_non_mask = - self.timesteps * non_mask_neg_cross_ent
+      loss_non_mask = -timesteps * non_mask_neg_cross_ent
       loss_diff = (wt * loss_mask + (1 - wt) * loss_non_mask)
     else:
       assert False, 'Not implemented for continuous time'
@@ -436,9 +453,17 @@ class MD4(nn.Module):
     probs_mask = jnp.ones(list(zt.shape) + [1]) * (1 - unmask_prob)
     probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
 
-    to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_pstep)
-    is_mask = zt == self.vocab_size
-    zs = jnp.where(is_mask, to_unmask, zt)
+    rng_pstep_1, rng_pstep_2 = jax.random.split(rng_pstep)
+
+    to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_pstep_1)
+    is_mask_zt = zt == self.vocab_size
+    is_mask_zs = zs == self.vocab_size
+    zs = jnp.where(is_mask_zt, to_unmask, zt)
+
+    if self.loss_type == 'sic_zero':
+      # Also sample the other positions
+      denoising_pred = tfd.Categorical(probs=mean_preds).sample(seed=rng_pstep_2)
+      zs = jnp.where(is_mask_zs, denoising_pred, zs)
 
     if self.k == 0:
         return zs
@@ -457,12 +482,15 @@ class MD4(nn.Module):
     # Add temperature annealing
     # This is minus since conventionally we add noise and take max
     scores -= self.gibbs_temp * jr.gumbel(rng_cstep_2, shape=(B, D))
-    is_mask = zs == self.vocab_size
-    scores = jnp.where(is_mask, jnp.inf, scores)
+    scores = jnp.where(is_mask_zs, jnp.inf, scores)
     
     # Trick: sort and then find the kth smallest
     thres = jnp.sort(scores, axis=-1)[:, self.k-1:self.k]
     zs = jnp.where((scores <= thres) & (zs != self.vocab_size), jump_target, zs)
+
+    if self.loss_type == 'sic_zero':
+      # Re-mask
+      zs = jnp.where(is_mask_zs, self.vocab_size, zs)
 
     return zs
 
