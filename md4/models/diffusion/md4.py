@@ -457,8 +457,8 @@ class MD4(nn.Module):
 
     to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_pstep_1)
     is_mask_zt = zt == self.vocab_size
-    is_mask_zs = zs == self.vocab_size
     zs = jnp.where(is_mask_zt, to_unmask, zt)
+    is_mask_zs = zs == self.vocab_size
 
     if self.loss_type == 'sic_zero':
       # Also sample the other positions
