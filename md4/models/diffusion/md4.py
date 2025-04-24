@@ -27,6 +27,8 @@ from md4 import binary_search
 from md4 import utils
 from md4.models import backward
 
+import jax.random as jr
+from jax.scipy.special import logsumexp
 
 tfd = tfp.distributions
 
@@ -330,6 +332,7 @@ class MD4(nn.Module):
         * self.noise_schedule.alpha(s)
         * masked_neg_cross_ent
       )
+      # TODO: this is probably wrong...! number of timesteps should be halved!
       loss_non_mask = - self.timesteps * non_mask_neg_cross_ent
       loss_diff = (wt * loss_mask + (1 - wt) * loss_non_mask)
     else:
