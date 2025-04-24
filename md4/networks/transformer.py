@@ -370,13 +370,6 @@ class Transformer(nn.Module):
       )
 
     if cond is not None:
-
-      # Assume that the conditioning is time t
-      # compute time embedding with TimeStepEmbedder
-
-      # Hard coded the time embedding size to be 128
-      cond = nn.silu(TimestepEmbedder(hidden_size=128)(cond))
-
       output_norm = nn.LayerNorm(
           epsilon=args.norm_eps, use_bias=False, use_scale=False
       )
