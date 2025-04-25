@@ -335,7 +335,7 @@ class MD4(nn.Module):
       coeff = jnp.expm1(gt - gs) * alpha_s
       non_mask_neg_cross_ent = coeff * jnp.sum(is_mask_xt * neg_cross_ent, remaining_axis)
     else:
-      non_mask_neg_cross_ent = jnp.sum((1 - is_mask_xs) * is_mask_xt * neg_cross_ent, remaining_axis)    
+      non_mask_neg_cross_ent = -jnp.sum((1 - is_mask_xs) * is_mask_xt * neg_cross_ent, remaining_axis)    
 
     # Also note here that we are not sampling xs and forcing xs_tilde to have the same masks
     # this is because the ancestral sampling must product the correct distribution on the mask configuration 
@@ -350,7 +350,7 @@ class MD4(nn.Module):
         * self.noise_schedule.alpha(s)
         * masked_neg_cross_ent
       )
-      loss_non_mask = -timesteps * non_mask_neg_cross_ent
+      loss_non_mask = timesteps * non_mask_neg_cross_ent
       loss_diff = (wt * loss_mask + (1 - wt) * loss_non_mask)
     else:
       assert False, 'Not implemented for continuous time'
