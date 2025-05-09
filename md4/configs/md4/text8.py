@@ -35,7 +35,7 @@ def get_config() -> config_dict.ConfigDict:
     config.data_shape = (256,)
 
     # timesteps: int or None
-    config.timesteps = 32
+    config.timesteps = 1000
     # linear, cosine, poly[exponent], e.g., poly3
     config.noise_schedule = "linear"
     config.outside_embed = True
@@ -43,8 +43,8 @@ def get_config() -> config_dict.ConfigDict:
     config.time_features = "t"
 
     # Use discrete time for the first version of SIC loss
-    # config.cont_time = True
-    config.cont_time = False
+    config.cont_time = True
+    # config.cont_time = False
 
     config.feature_dim = 64
     config.n_layers = 12

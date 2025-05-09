@@ -101,7 +101,7 @@ class MD4(nn.Module):
   # time_features: t or none
   time_features: str = 't'
   classes: int = 10 + 1  # image classes
-  sampler: str = 'informed'
+  sampler: str = 'ancestral'  # ancestral, informed, uninformed
   # uniform, cosine
   sampling_grid: str = 'cosine'
   topp: float = 0.98
@@ -380,12 +380,12 @@ class MD4(nn.Module):
     else:
       t = jax.random.uniform(rng1, shape=[bs])
 
-    # loss_diff = self.diffusion_loss(t, x, cond=cond, train=train).mean()
-    loss_diff, loss_mask, loss_non_mask = self.sic_diffusion_loss(
-        t, x, rng2, cond=cond, train=train)
-    loss_diff = jnp.mean(loss_diff)
-    loss_mask = jnp.mean(loss_mask)
-    loss_non_mask = jnp.mean(loss_non_mask)
+    loss_diff = self.diffusion_loss(t, x, cond=cond, train=train).mean()
+    # loss_diff, loss_mask, loss_non_mask = self.sic_diffusion_loss(
+    #     t, x, rng2, cond=cond, train=train)
+    # loss_diff = jnp.mean(loss_diff)
+    # loss_mask = jnp.mean(loss_mask)
+    # loss_non_mask = jnp.mean(loss_non_mask)
 
     loss = loss_diff + loss_prior + loss_recon
 
@@ -394,8 +394,8 @@ class MD4(nn.Module):
         'loss_diff': loss_diff,
         'loss_prior': loss_prior,
         'loss_recon': loss_recon,
-        'loss_mask': loss_mask,
-        'loss_non_mask': loss_non_mask,
+        # 'loss_mask': loss_mask,
+        # 'loss_non_mask': loss_non_mask,
     }
     model_stats = utils.loss2bpt(model_stats, self.data_shape)
     return model_stats
