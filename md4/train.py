@@ -792,8 +792,9 @@ def train_and_evaluate(config: ml_collections.ConfigDict, workdir: epath.PathLik
                 writer.write_scalars(step, train_metrics.compute())
                 train_metrics = None
 
-            # if False:
-            if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
+            # I don't know why but eval crashes the program
+            if False:
+            # if step == 1 or step % config.eval_every_steps == 0 or is_last_step:
                 for split, eval_loader in eval_loaders.items():
                     rng, eval_rng = jax.random.split(rng)
                     with report_progress.timed("eval"):
