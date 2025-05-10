@@ -45,19 +45,23 @@ def generate(model, train_state, rng, dummy_inputs, conditioning=None):
   )
   rng, sub_rng = jax.random.split(rng)
 
+  timesteps = model.timesteps
+  if model.sampler == 'informed':
+    timesteps //= 2
+
   def body_fn(i, zt):
     return model.apply(
         variables,
         sub_rng,
         i,
-        model.timesteps,
+        timesteps,
         zt,
         conditioning=conditioning,
         method=model.sample_step,
     )
 
   z0 = jax.lax.fori_loop(
-      lower=0, upper=model.timesteps, body_fun=body_fn, init_val=zt
+      lower=0, upper=timesteps, body_fun=body_fn, init_val=zt
   )
   return model.apply(
       variables,

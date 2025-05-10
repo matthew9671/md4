@@ -27,6 +27,8 @@ from md4 import binary_search
 from md4 import utils
 from md4.models import backward
 
+import jax.random as jr
+from jax.scipy.special import logsumexp
 
 tfd = tfp.distributions
 
@@ -99,11 +101,22 @@ class MD4(nn.Module):
   # time_features: t or none
   time_features: str = 't'
   classes: int = 10 + 1  # image classes
-  sampler: str = 'analytic'
+  sampler: str = 'ancestral'  # ancestral, informed, uninformed
   # uniform, cosine
   sampling_grid: str = 'cosine'
   topp: float = 0.98
   model_sharding: bool = False
+
+  # Informed correctors
+  k: int = 4
+  gibbs_temp: float = 1.0
+  # Uninformed correctors
+  uninformed_step_size: float = 0.5
+  # MaskGIT
+  maskgit_temp: float = 1.0
+
+  # SIC stuff
+  loss_type: str = 'sic_zero' # sic_zero, sic, md4
 
   def setup(self):
     self.noise_schedule = MaskingSchedule(
@@ -239,6 +252,111 @@ class MD4(nn.Module):
     # loss_diff: [bs]
     return loss_diff
 
+  # The loss for training simple informed correctors
+  def sic_diffusion_loss(self, t, x, rng, cond=None, train=False):
+    # t shape: [bs]
+
+    if not self.cont_time:
+      # discretize time steps
+      t = (jnp.floor(t * self.timesteps) + 1) / self.timesteps
+
+    # The weight balacing the mask term and non-mask term
+    wt = .5
+    # wt = t
+
+    # sample z_t
+    xt = self.forward_sample(x, t)
+    logits, _ = self.predict_x(xt, t, cond=cond, train=train)
+    log_p = jax.nn.log_softmax(logits, axis=-1)
+    one_hot_x = jax.nn.one_hot(x, self.vocab_size)
+    neg_cross_ent = one_hot_x * log_p
+    neg_cross_ent = jnp.where(one_hot_x, neg_cross_ent, 0.0)
+    neg_cross_ent = jnp.sum(neg_cross_ent, axis=-1)
+    mask = (xt == self.vocab_size).astype('float32')
+
+    remaining_axis = list(range(x.ndim)[1:])
+    # masked_neg_cross_ent: [bs]
+    masked_neg_cross_ent = jnp.sum(mask * neg_cross_ent, remaining_axis)
+
+    # Additional loss for SIC
+    # Sample xs_tilde by running 1 ancestral step
+    # This is copied from ancestral_sample_step
+    # Timesteps is the number of sampling steps for predictor-only
+    # For predictor-corrector, we need to divide by 2
+    timesteps = self.timesteps
+    s = t - 1.0 / timesteps
+    s = jnp.clip(s, 0.0, 1.0) # Edge case s < 0.0
+    alpha_t = self.noise_schedule.alpha(t)
+    alpha_s = self.noise_schedule.alpha(s)
+
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    if self.loss_type == 'sic_zero':
+      unmask_prob = jnp.ones_like(alpha_t) # We're unmasking everything
+    else:
+      unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
+
+    # We need to boardcast here, but somehow in sampling boardcasting is not needed
+    unmask_prob = unmask_prob[..., None, None]
+    probs_vocab = unmask_prob * mean_preds
+
+    probs_mask = jnp.ones(list(xt.shape) + [1]) * (1 - unmask_prob)
+    probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
+
+    to_unmask = tfd.Categorical(probs=probs).sample(seed=rng)
+    is_mask_xt = xt == self.vocab_size
+    xs_tilde = jnp.where(is_mask_xt, to_unmask, xt)
+    # Don't take gradient w.r.t. xs_tilde
+    xs_tilde = jax.lax.stop_gradient(xs_tilde)
+
+    # Pass the sampled xs_tilde through the model
+    logits_xs_tilde, _ = self.predict_x(xs_tilde, s, cond=cond, train=train)
+    log_p_xs_tilde = jax.nn.log_softmax(logits_xs_tilde, axis=-1)
+
+    # Compute the cross entropy on the non-mask dimensions
+    neg_cross_ent = one_hot_x * log_p_xs_tilde
+    neg_cross_ent = jnp.where(one_hot_x, neg_cross_ent, 0.0)
+    neg_cross_ent = jnp.sum(neg_cross_ent, axis=-1)
+    is_mask_xs = (xs_tilde == self.vocab_size).astype('float32')
+
+    remaining_axis = list(range(x.ndim)[1:])
+    # masked_neg_cross_ent: [bs]
+    # We actually want to only consider the dimensions that are generated in this step
+    # because in theory we want to compute p(x_s|x_s_tilde, x_t)
+    # and all the tokens in x_t are already known
+    # non_mask_neg_cross_ent = jnp.sum((1 - is_mask_xs) * neg_cross_ent, remaining_axis)
+
+    if self.loss_type == 'sic_zero':
+      # We will sum over all the dimensions unknown to x_t
+      # Since we sumed over more dimensions, we need to scale down this term by the same factor as
+      # in the MD4 loss
+      gt = self.noise_schedule(t)
+      gs = self.noise_schedule(s)
+      coeff = jnp.expm1(gt - gs) * alpha_s
+      non_mask_neg_cross_ent = coeff * jnp.sum(is_mask_xt * neg_cross_ent, remaining_axis)
+    else:
+      non_mask_neg_cross_ent = -jnp.sum((1 - is_mask_xs) * is_mask_xt * neg_cross_ent, remaining_axis)    
+
+    # Also note here that we are not sampling xs and forcing xs_tilde to have the same masks
+    # this is because the ancestral sampling must product the correct distribution on the mask configuration 
+    # and sampling the mask configuration is independent from sampling the tokens
+
+    if not self.cont_time:
+      # loss for finite depth T, i.e. discrete time
+      gt = self.noise_schedule(t)
+      gs = self.noise_schedule(s)
+      loss_mask = timesteps * (
+        jnp.expm1(gt - gs)
+        * self.noise_schedule.alpha(s)
+        * masked_neg_cross_ent
+      )
+      loss_non_mask = timesteps * non_mask_neg_cross_ent
+      loss_diff = (wt * loss_mask + (1 - wt) * loss_non_mask)
+    else:
+      assert False, 'Not implemented for continuous time'
+    # loss_diff: [bs]
+    return loss_diff, loss_mask, loss_non_mask
+
   @nn.compact
   def __call__(self, x, cond=None, train=False):
     bs = x.shape[0]
@@ -254,6 +372,8 @@ class MD4(nn.Module):
     # 3. DIFFUSION LOSS: [bs]
     # sample time steps
     rng1 = self.make_rng('sample')
+    rng1, rng2 = jax.random.split(rng1)
+
     if self.antithetic_time_sampling:
       t0 = jax.random.uniform(rng1)
       t = jnp.mod(t0 + jnp.arange(0.0, 1.0, step=1.0 / bs), 1.0)
@@ -261,6 +381,12 @@ class MD4(nn.Module):
       t = jax.random.uniform(rng1, shape=[bs])
 
     loss_diff = self.diffusion_loss(t, x, cond=cond, train=train).mean()
+    # loss_diff, loss_mask, loss_non_mask = self.sic_diffusion_loss(
+    #     t, x, rng2, cond=cond, train=train)
+    # loss_diff = jnp.mean(loss_diff)
+    # loss_mask = jnp.mean(loss_mask)
+    # loss_non_mask = jnp.mean(loss_non_mask)
+
     loss = loss_diff + loss_prior + loss_recon
 
     model_stats = {
@@ -268,6 +394,8 @@ class MD4(nn.Module):
         'loss_diff': loss_diff,
         'loss_prior': loss_prior,
         'loss_recon': loss_recon,
+        # 'loss_mask': loss_mask,
+        # 'loss_non_mask': loss_non_mask,
     }
     model_stats = utils.loss2bpt(model_stats, self.data_shape)
     return model_stats
@@ -300,6 +428,70 @@ class MD4(nn.Module):
     to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_body)
     is_mask = zt == self.vocab_size
     zs = jnp.where(is_mask, to_unmask, zt)
+    return zs
+
+  def ancestral_sample_step_informed(self, rng, i, timesteps, zt, conditioning=None):
+
+    B, D = zt.shape[:2]
+
+    rng_body = jax.random.fold_in(rng, i)
+    s, t = self.get_sampling_grid(i, timesteps)
+    cond = self.get_cond_embedding(conditioning)
+
+    alpha_t = self.noise_schedule.alpha(t)
+    alpha_s = self.noise_schedule.alpha(s)
+
+    rng_pstep, rng_cstep = jr.split(rng_body, 2)
+
+    # Predictor (ancestral)
+    logits, _ = self.predict_x(zt, t, cond=cond)
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
+    probs_vocab = unmask_prob * mean_preds
+
+    probs_mask = jnp.ones(list(zt.shape) + [1]) * (1 - unmask_prob)
+    probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
+
+    rng_pstep_1, rng_pstep_2 = jax.random.split(rng_pstep)
+
+    to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_pstep_1)
+    is_mask_zt = zt == self.vocab_size
+    zs = jnp.where(is_mask_zt, to_unmask, zt)
+    is_mask_zs = zs == self.vocab_size
+
+    if self.loss_type == 'sic_zero':
+      # Also sample the other positions
+      denoising_pred = tfd.Categorical(probs=mean_preds).sample(seed=rng_pstep_2)
+      zs = jnp.where(is_mask_zs, denoising_pred, zs)
+
+    if self.k == 0:
+        return zs
+
+    # Corrector (gibbs)
+    rng_cstep_1, rng_cstep_2 = jr.split(rng_cstep, 2)
+    logits, _ = self.predict_x(zs, s, cond=cond)
+    logits -= logsumexp(logits, axis=-1, keepdims=True)
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    jump_target = tfd.Categorical(probs=mean_preds).sample(seed=rng_cstep_1)
+    # Figure out locations with the lowest score
+    # Since the score is proportional to the denoising prob anyways, we're just gonna use the logits again
+    b_idx, d_idx = jnp.indices((B, D))
+    scores = logits[b_idx, d_idx, zs]
+    # Add temperature annealing
+    # This is minus since conventionally we add noise and take max
+    scores -= self.gibbs_temp * jr.gumbel(rng_cstep_2, shape=(B, D))
+    scores = jnp.where(is_mask_zs, jnp.inf, scores)
+    
+    # Trick: sort and then find the kth smallest
+    thres = jnp.sort(scores, axis=-1)[:, self.k-1:self.k]
+    zs = jnp.where((scores <= thres) & (zs != self.vocab_size), jump_target, zs)
+
+    if self.loss_type == 'sic_zero':
+      # Re-mask
+      zs = jnp.where(is_mask_zs, self.vocab_size, zs)
+
     return zs
 
   def topp_sample_step(
@@ -356,6 +548,10 @@ class MD4(nn.Module):
   def sample_step(self, rng, i, timesteps, zt, conditioning=None, topp=None):
     if self.sampler == 'ancestral':
       return self.ancestral_sample_step(
+          rng, i, timesteps, zt, conditioning=conditioning
+      )
+    elif self.sampler == "informed":
+      return self.ancestral_sample_step_informed(
           rng, i, timesteps, zt, conditioning=conditioning
       )
     elif self.sampler == 'topp':

@@ -314,10 +314,11 @@ class HollowTransformer(nn.Module):
 
     for layer in range(args.n_layers):
 
-      mtb = MaskedTransformerBlock(layer_id, args)
+      mtb_f = MaskedTransformerBlock(layer_id, args)
+      mtb_b = MaskedTransformerBlock(layer_id, args)
       # Forward stream
-      hf = mtb(hf, hf, freqs_cos_f, freqs_sin_f, forward_mask, cond=cond, train=train)
-      hb = mtb(hb, hb, freqs_cos_b, freqs_sin_b, backward_mask, cond=cond, train=train)
+      hf = mtb_f(hf, hf, freqs_cos_f, freqs_sin_f, forward_mask, cond=cond, train=train)
+      hb = mtb_b(hb, hb, freqs_cos_b, freqs_sin_b, backward_mask, cond=cond, train=train)
       layer_id += 1
 
       # Mixing stream

@@ -29,6 +29,7 @@ import jax.numpy as jnp
 # pylint: disable=missing-class-docstring
 # pylint: disable=missing-function-docstring
 
+from md4.networks.time_embedding import TimestepEmbedder
 
 activation_map = dict(
     swiglu=nn.swish,
