@@ -450,7 +450,7 @@ class HollowMD4(nn.Module):
 
         return zs
 
-    def remdm_sample_step(self, rng, i, timesteps, zt, conditioning=None):
+    def remdm_sample_step(self, rng, i, timesteps, zt, conditioning=None, topp=0.9):
 
         # Maximum remasking rate
         sigma_cap = self.sigma_cap
@@ -465,6 +465,7 @@ class HollowMD4(nn.Module):
         alpha_s = self.noise_schedule.alpha(s)
 
         logits, _ = self.predict_x(zt, t, cond=cond)
+        logits = binary_search.topp_mask(logits, topp, replace_val=jnp.array(-1e7))
         mean_preds = jax.nn.softmax(logits, axis=-1)
 
         sigma_t = jnp.minimum((1 - alpha_s) / alpha_t,  sigma_cap)
