@@ -107,6 +107,8 @@ class HollowMD4(nn.Module):
     uninformed_step_size: float = 0.5
     # MaskGIT
     maskgit_temp: float = 1.0
+    # ReMDM
+    sigma_cap: float = 0.02
 
     def setup(self):
         self.noise_schedule = MaskingSchedule(self.data_shape, self.noise_schedule_type)
@@ -448,6 +450,48 @@ class HollowMD4(nn.Module):
 
         return zs
 
+    def remdm_sample_step(self, rng, i, timesteps, zt, conditioning=None):
+
+        # Maximum remasking rate
+        sigma_cap = self.sigma_cap
+
+        MASK = self.vocab_size
+
+        rng_body = jax.random.fold_in(rng, i)
+        s, t = self.get_sampling_grid(i, timesteps)
+        cond = self.get_cond_embedding(conditioning)
+
+        alpha_t = self.noise_schedule.alpha(t)
+        alpha_s = self.noise_schedule.alpha(s)
+
+        logits, _ = self.predict_x(zt, t, cond=cond)
+        mean_preds = jax.nn.softmax(logits, axis=-1)
+
+        sigma_t = jnp.minimum((1 - alpha_s) / alpha_t,  sigma_cap)
+
+        unmask_prob = (alpha_s - (1 - sigma_t) * alpha_t) / (1 - alpha_t)
+        probs_vocab = unmask_prob * mean_preds
+
+        probs_mask = jnp.ones(list(zt.shape) + [1]) * (1 - unmask_prob)
+        probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
+
+        probs = jnp.where(zt[...,None] != MASK, 
+            # Non-mask, mask with probability sigma_t
+            # Shape: [B, D, S+1]
+            jnp.concatenate([jax.nn.one_hot(zt, self.vocab_size) * (1 - sigma_t),
+                            jnp.ones(list(zt.shape) + [1]) * sigma_t], axis=-1),
+            # Backward rate = - dalphat / (1 - alphat) * denoising_probs
+            # Shape: [B, D, S+1]
+            probs
+        )
+
+        to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_body)
+        # is_mask = zt == self.vocab_size
+        # zs = jnp.where(is_mask, to_unmask, zt)
+        zs = to_unmask
+
+        return zs
+
     def maskgit_sample_step(self, rng, i, timesteps, zt, conditioning=None):
 
         B, D = zt.shape[:2]
@@ -548,6 +592,10 @@ class HollowMD4(nn.Module):
             )
         elif self.sampler == "maskgit":
             return self.maskgit_sample_step(
+                rng, i, timesteps, zt, conditioning=conditioning
+            )
+        elif self.sampler == "remdm":
+            return self.remdm_sample_step(
                 rng, i, timesteps, zt, conditioning=conditioning
             )
         elif self.sampler == "uninformed":

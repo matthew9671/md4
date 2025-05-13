@@ -27,6 +27,8 @@ from md4 import binary_search
 from md4 import utils
 from md4.models import backward
 
+from jax.scipy.special import logsumexp
+
 
 tfd = tfp.distributions
 
@@ -104,6 +106,13 @@ class MD4(nn.Module):
   sampling_grid: str = 'cosine'
   topp: float = 0.98
   model_sharding: bool = False
+
+  # Uninformed correctors
+  uninformed_step_size: float = 0.5
+  # MaskGIT
+  maskgit_temp: float = 1.0
+  # ReMDM
+  sigma_cap: float = 0.02
 
   def setup(self):
     self.noise_schedule = MaskingSchedule(
@@ -352,12 +361,172 @@ class MD4(nn.Module):
     is_mask = zt == self.vocab_size
     zs = jnp.where(is_mask, to_unmask, zt)
     return zs
+  
+  def ancestral_sample_step_uninformed(self, rng, i, timesteps, zt, conditioning=None):
+
+    rng_body = jax.random.fold_in(rng, i)
+    s, t = self.get_sampling_grid(i, timesteps)
+    cond = self.get_cond_embedding(conditioning)
+
+    alpha_t = self.noise_schedule.alpha(t)
+    alpha_s = self.noise_schedule.alpha(s)
+
+    rng_pstep, rng_cstep = jr.split(rng_body, 2)
+
+    # Predictor (ancestral)
+    logits, _ = self.predict_x(zt, t, cond=cond)
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    unmask_prob = (alpha_s - alpha_t) / (1 - alpha_t)
+    probs_vocab = unmask_prob * mean_preds
+
+    probs_mask = jnp.ones(list(zt.shape) + [1]) * (1 - unmask_prob)
+    probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
+
+    to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_pstep)
+    is_mask = zt == self.vocab_size
+    zs = jnp.where(is_mask, to_unmask, zt)
+
+    # Corrector (uninformed)
+    # Need to compute the backward rates from the logits
+    # then sample with euler step...
+    MASK = self.vocab_size
+
+    logits, _ = self.predict_x(zs, s, cond=cond)
+    logits -= logsumexp(logits, axis=-1, keepdims=True)
+    # Shape: [B, D, S]
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    B, D, S = logits.shape
+    b_idx, d_idx = jnp.indices((B, D))
+
+    def _euler_update(key, x, rates):
+        eps = 1e-8
+        # Mask out the self transitions
+        rates = rates.at[b_idx, d_idx, x].set(0.0)
+        sum_rates = jnp.sum(rates, axis=-1)
+        # transition_logit = jnp.log(-jnp.expm1(-rates)) # Prob = 1 - exp(-rate)
+        transition_logit = jnp.log(-jnp.expm1(-sum_rates))[...,None] + jnp.log(rates) - jnp.log(sum_rates + eps)[...,None]
+        transition_logit = transition_logit.at[b_idx, d_idx, x].set(-sum_rates)
+        
+        out = jr.categorical(key, transition_logit).astype(jnp.int32)
+        return out
+
+    dalpha_s = self.noise_schedule.dalpha(s)
+    # Compute the rate matrix
+    # Shape: [B, D, S+1]
+    rates = jnp.where(zs[...,None] != MASK, 
+        # Forward rate = - dalphat / alphat
+        # Shape: [1, 1, S+1]
+        jnp.concatenate([jnp.zeros((S,)), jnp.array((-dalpha_s / alpha_s,))])[None, None],
+        # Backward rate = - dalphat / (1 - alphat) * denoising_probs
+        # Shape: [B, D, S+1]
+        jnp.concatenate([mean_preds * (-dalpha_s / (1-alpha_s)), jnp.zeros((B, D, 1))], axis=-1)
+    )
+    
+    # The forward_backward_corrector shouldn't be used when s is 0
+    zs = jax.lax.cond(s == 0, lambda x: x, 
+        lambda x: _euler_update(rng_cstep, x, rates * self.uninformed_step_size * (t-s)), zs)
+
+    return zs
+
+  def maskgit_sample_step(self, rng, i, timesteps, zt, conditioning=None):
+
+    B, D = zt.shape[:2]
+
+    rng_body = jax.random.fold_in(rng, i)
+    s, t = self.get_sampling_grid(i, timesteps)
+    cond = self.get_cond_embedding(conditioning)
+
+    alpha_t = self.noise_schedule.alpha(t)
+    alpha_s = self.noise_schedule.alpha(s)
+
+    rng_1, rng_2 = jr.split(rng_body, 2)
+    logits, _ = self.predict_x(zt, t, cond=cond)
+    logits -= logsumexp(logits, axis=-1, keepdims=True)
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    jump_target = tfd.Categorical(probs=mean_preds).sample(seed=rng_1)
+    # Figure out locations with the lowest score
+    # Since the score is proportional to the denoising prob anyways, we're just gonna use the logits again
+    b_idx, d_idx = jnp.indices((B, D))
+    scores = logits[b_idx, d_idx, jump_target]
+    # Add temperature annealing
+    # This is minus since conventionally we add noise and take max
+    scores += t * self.maskgit_temp * jr.gumbel(rng_2, shape=(B, D))
+    # Don't touch tokens already generated
+    scores = jnp.where(zt != self.vocab_size, -jnp.inf, scores)
+    
+    percentage_to_unmask = alpha_s - alpha_t
+    # Shape: [B]
+    mask_count = jnp.sum(zt == self.vocab_size, axis=-1)
+    k = jnp.minimum(mask_count-1, jnp.floor(percentage_to_unmask * D).astype(int))
+    k = jnp.maximum(1, k)
+
+    # Trick: sort and then find the kth smallest
+    thres = -jnp.sort(-scores, axis=-1)[jnp.arange(B), k-1][:, None]
+    zt = jnp.where(scores >= thres, jump_target, zt)
+
+    return zt
+  
+  def remdm_sample_step(self, rng, i, timesteps, zt, conditioning=None):
+
+    # Maximum remasking rate
+    sigma_cap = self.sigma_cap
+    MASK = self.vocab_size
+
+    rng_body = jax.random.fold_in(rng, i)
+    s, t = self.get_sampling_grid(i, timesteps)
+    cond = self.get_cond_embedding(conditioning)
+
+    alpha_t = self.noise_schedule.alpha(t)
+    alpha_s = self.noise_schedule.alpha(s)
+
+    logits, _ = self.predict_x(zt, t, cond=cond)
+    mean_preds = jax.nn.softmax(logits, axis=-1)
+
+    sigma_t = jnp.minimum((1 - alpha_s) / alpha_t,  sigma_cap)
+
+    unmask_prob = (alpha_s - (1 - sigma_t) * alpha_t) / (1 - alpha_t)
+    probs_vocab = unmask_prob * mean_preds
+
+    probs_mask = jnp.ones(list(zt.shape) + [1]) * (1 - unmask_prob)
+    probs = jnp.concatenate([probs_vocab, probs_mask], axis=-1)
+
+    probs = jnp.where(zt[...,None] != MASK, 
+        # Non-mask, mask with probability sigma_t
+        # Shape: [B, D, S+1]
+        jnp.concatenate([jax.nn.one_hot(zt, self.vocab_size) * (1 - sigma_t),
+                        jnp.ones(list(zt.shape) + [1]) * sigma_t], axis=-1),
+        # Backward rate = - dalphat / (1 - alphat) * denoising_probs
+        # Shape: [B, D, S+1]
+        probs
+    )
+
+    to_unmask = tfd.Categorical(probs=probs).sample(seed=rng_body)
+    # is_mask = zt == self.vocab_size
+    # zs = jnp.where(is_mask, to_unmask, zt)
+    zs = to_unmask
+
+    return zs
 
   def sample_step(self, rng, i, timesteps, zt, conditioning=None, topp=None):
     if self.sampler == 'ancestral':
       return self.ancestral_sample_step(
           rng, i, timesteps, zt, conditioning=conditioning
       )
+    elif self.sampler == "maskgit":
+        return self.maskgit_sample_step(
+            rng, i, timesteps, zt, conditioning=conditioning
+        )
+    elif self.sampler == "remdm":
+        return self.remdm_sample_step(
+            rng, i, timesteps, zt, conditioning=conditioning
+        )
+    elif self.sampler == "uninformed":
+        return self.ancestral_sample_step_uninformed(
+            rng, i, timesteps, zt, conditioning=conditioning
+        )
     elif self.sampler == 'topp':
       topp = self.topp if topp is None else topp
       return self.topp_sample_step(
