@@ -23,6 +23,8 @@ import jax
 import jax.numpy as jnp
 import tensorflow_probability.substrates.jax as tfp
 
+import jax.random as jr
+
 from md4 import binary_search
 from md4 import utils
 from md4.models import backward
