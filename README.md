@@ -16,6 +16,13 @@ export PYTHONPATH="$PYTHONPATH:~/md4"
 ```
 
 ```
+mkdir data_dir
+cd data_dir
+~/google-cloud-sdk/bin/gsutil -m cp -r gs://maskdiff/text8 .
+~/google-cloud-sdk/bin/gsutil -m cp -r gs://maskdiff/SIC/text8_base .
+```
+
+```
 cd md4
 mkdir data_dir
 cd data_dir
